@@ -14,7 +14,7 @@ pub fn parse_launcher_id(input: &str) -> Result<Bytes32, CliError> {
         }
     }
 
-    if input.starts_with("nft1") {
+    if input.starts_with("nft") {
         return parse_bech32m_payload(input);
     }
 
@@ -28,6 +28,30 @@ pub fn parse_launcher_id(input: &str) -> Result<Bytes32, CliError> {
     }
 
     parse_bech32m_payload(input)
+}
+
+pub fn is_nft_launcher_id(input: &str) -> bool {
+    input.starts_with("nft")
+}
+
+pub fn is_did_launcher_id(input: &str) -> bool {
+    input.starts_with("did:chia:")
+}
+
+pub fn classify_prefixed_launcher_id(input: &str) -> Option<TrackedKind> {
+    if is_nft_launcher_id(input) {
+        return Some(TrackedKind::Nft);
+    }
+    if is_did_launcher_id(input) {
+        return Some(TrackedKind::Did);
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackedKind {
+    Nft,
+    Did,
 }
 
 pub fn parse_bech32m_payload(value: &str) -> Result<Bytes32, CliError> {

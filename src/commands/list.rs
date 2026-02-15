@@ -25,7 +25,7 @@ pub async fn run(pool: &SqlitePool, args: ListArgs) -> Result<(), CliError> {
 
     if !args.dids_only {
         let nfts = fetch_nfts(pool).await?;
-        println!("Tracked NFTs: {}", nfts.len());
+        println!("Tracked NFTs (not minted by a tracked DID): {}", nfts.len());
         for nft in nfts {
             let launcher_string = encode_nft_launcher_id(&nft.launcher_id)?;
             println!("- {launcher_string}");

@@ -33,24 +33,6 @@ pub struct ListArgs {
 
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    #[command(subcommand)]
-    pub kind: AddKind,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum AddKind {
-    /// Add NFT launcher IDs to tracking
-    Nft(AddInputArgs),
-    /// Add DID launcher IDs to tracking
-    Did(AddInputArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct AddInputArgs {
-    /// Comma-separated launcher IDs
-    #[arg(long)]
-    pub ids: Option<String>,
-    /// File containing launcher IDs (one per line)
-    #[arg(long)]
-    pub file: Option<PathBuf>,
+    /// Comma-separated IDs (nft... / did:chia:...) OR a file path
+    pub value: String,
 }
