@@ -144,7 +144,11 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             "Fetching solutions for and processing {} spent coin records...",
             spent_coin_records.len()
         );
-        for (coin_record, coin_data) in spent_coin_records {
+        for (i, (coin_record, coin_data)) in spent_coin_records.iter().enumerate() {
+            if i % 100 == 0 && i > 0 {
+                println!("Processed {} spent coin records...", i);
+            }
+
             let Some(coin_spend) = client
                 .get_puzzle_and_solution(
                     coin_record.coin.coin_id(),
@@ -167,7 +171,64 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                     // TODO: parse NFTs
                 }
                 CoinType::Did => {
-                    // TODO: parse DIDs
+                    let res = ctx.run(puzzle, solution)?;
+                    let output_conds = ctx.extract::<Conditions>(res)?;
+                    for cond in output_conds.iter() {
+                        if let Condition::CreateCoin(cc) = cond {
+                            let new_coin = Coin::new(coin_data.coin_id, cc.puzzle_hash, cc.amount);
+                            if cc.amount % 2 == 1 {
+                                // Even amount -> this is the new singleton / DID
+
+                                db::add_coin_to_db(
+                                    pool,
+                                    CoinType::Did,
+                                    coin_data.launcher_id,
+                                    coin_data.did_launcher_id,
+                                    &CoinRecord {
+                                        coin: new_coin,
+                                        confirmed_block_index: coin_record.spent_block_index,
+                                        spent_block_index: 0,
+                                        spent: false,
+                                        coinbase: false,
+                                        timestamp: coin_record.timestamp,
+                                    },
+                                )
+                                .await?;
+
+                                continue;
+                            }
+
+                            // this is an even amount coin -> launcher or intermediary coin
+                            let (coin_type, launcher_id) =
+                                if new_coin.puzzle_hash != SINGLETON_LAUNCHER_HASH.into() {
+                                    (CoinType::IntermediaryCoin, None)
+                                } else {
+                                    // singleton launcher!
+                                    (CoinType::Nft, Some(new_coin.coin_id()))
+                                };
+                            db::add_coin_to_db(
+                                pool,
+                                coin_type,
+                                launcher_id,
+                                coin_data.launcher_id, // DID launcher id is the DID's launcher id property :)
+                                &CoinRecord {
+                                    coin: new_coin,
+                                    confirmed_block_index: coin_record.spent_block_index,
+                                    spent_block_index: 0,
+                                    spent: false,
+                                    coinbase: false,
+                                    timestamp: coin_record.timestamp,
+                                },
+                            )
+                            .await?;
+                        }
+                    }
+                    db::update_coin_spent_height(
+                        pool,
+                        &coin_data.coin_id,
+                        coin_record.spent_block_index,
+                    )
+                    .await?;
                 }
                 CoinType::IntermediaryCoin => {
                     let res = ctx.run(puzzle, solution)?;
@@ -205,14 +266,14 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 },
                             )
                             .await?;
-                            db::update_coin_spent_height(
-                                pool,
-                                &coin_data.coin_id,
-                                coin_record.spent_block_index,
-                            )
-                            .await?;
                         }
                     }
+                    db::update_coin_spent_height(
+                        pool,
+                        &coin_data.coin_id,
+                        coin_record.spent_block_index,
+                    )
+                    .await?;
                 }
             }
         }
