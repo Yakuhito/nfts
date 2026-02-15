@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chia_wallet_sdk::driver::SpendContext;
 use chia_wallet_sdk::prelude::{Bytes32, ChiaRpcClient, Coin, CoinRecord, CoinsetClient};
 use chia_wallet_sdk::puzzles::SINGLETON_LAUNCHER_HASH;
@@ -101,9 +103,14 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
         }
     }
 
+    let mut processed_coin_ids: HashSet<Bytes32> = HashSet::new();
     loop {
         println!("New sync loop: fetching unspent coins...");
-        let unspent_coins = fetch_unspent_coins(pool).await?;
+        let unspent_coins = fetch_unspent_coins(pool)
+            .await?
+            .into_iter()
+            .filter(|c| !processed_coin_ids.contains(&c.coin_id))
+            .collect::<Vec<_>>();
 
         let mut spent_coin_records: Vec<(CoinRecord, &DbCoin)> = Vec::new();
         println!(
@@ -127,12 +134,11 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                 ));
             };
 
-            spent_coin_records.extend(
-                coin_records
-                    .into_iter()
-                    .zip(coin_data)
-                    .filter(|c| c.0.spent),
-            );
+            coin_records.iter().for_each(|c| {
+                processed_coin_ids.insert(c.coin.coin_id());
+            });
+            let zipped = coin_records.into_iter().zip(coin_data);
+            spent_coin_records.extend(zipped.filter(|c| c.0.spent));
         }
 
         if spent_coin_records.is_empty() {
