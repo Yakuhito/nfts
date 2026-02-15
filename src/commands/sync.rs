@@ -1,4 +1,4 @@
-use chia_wallet_sdk::prelude::{ChiaRpcClient, CoinsetClient};
+use chia_wallet_sdk::prelude::{ChiaRpcClient, CoinRecord, CoinsetClient};
 use chia_wallet_sdk::puzzles::SINGLETON_LAUNCHER_HASH;
 use sqlx::SqlitePool;
 
@@ -64,13 +64,27 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
         }
         for coin_record in coin_records {
             let (coin_type, launcher_id) =
-                if coin_record.coin.puzzle_hash == SINGLETON_LAUNCHER_HASH.into() {
+                if coin_record.coin.puzzle_hash != SINGLETON_LAUNCHER_HASH.into() {
                     (CoinType::IntermediaryCoin, None)
                 } else {
                     // singleton launcher!
                     (CoinType::Nft, Some(coin_record.coin.coin_id()))
                 };
-            db::add_coin_to_db(pool, coin_type, launcher_id, None, &coin_record).await?;
+            db::add_coin_to_db(
+                pool,
+                coin_type,
+                launcher_id,
+                None,
+                &CoinRecord {
+                    coin: coin_record.coin,
+                    confirmed_block_index: coin_record.confirmed_block_index,
+                    spent_block_index: 0,
+                    spent: false,
+                    coinbase: coin_record.coinbase,
+                    timestamp: coin_record.timestamp,
+                },
+            )
+            .await?;
         }
 
         for puzzle_hash in puzzle_hashes {
