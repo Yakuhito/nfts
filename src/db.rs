@@ -1,8 +1,9 @@
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow, types::Json};
+use std::collections::BTreeSet;
 
 use crate::error::CliError;
 use crate::models::{
-    Coin as DbCoin, CoinType, OffchainMetadata, ParsedMetadata, TrackedPuzzleHash,
+    Coin as DbCoin, CoinType, MetadataValue, OffchainMetadata, ParsedMetadata, TrackedPuzzleHash,
 };
 use crate::utils::{bytes32_from_db, optional_bytes32_from_db};
 use chia_wallet_sdk::prelude::{Bytes32, Coin};
@@ -64,6 +65,10 @@ pub async fn add_coin_to_db(
     created_height: u32,
     metadata: Option<ParsedMetadata>,
 ) -> Result<(), CliError> {
+    if let Some(metadata) = metadata.as_ref() {
+        upsert_offchain_metadata_from_parsed_metadata(pool, metadata).await?;
+    }
+
     let metadata_json = metadata
         .map(|metadata| {
             serde_json::to_value(metadata).map_err(|err| {
@@ -92,6 +97,91 @@ pub async fn add_coin_to_db(
     .await?;
 
     Ok(())
+}
+
+pub async fn upsert_offchain_metadata_from_parsed_metadata(
+    pool: &SqlitePool,
+    metadata: &ParsedMetadata,
+) -> Result<(), CliError> {
+    let Some((metadata_hash, urls)) = extract_offchain_metadata(metadata)? else {
+        return Ok(());
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO offchain_metadata (metadata_hash, urls, value, next_retry, retries_so_far)
+        VALUES (?1, ?2, NULL, NULL, 0)
+        ON CONFLICT(metadata_hash) DO UPDATE SET
+            urls = (
+                SELECT COALESCE(json_group_array(value), '[]')
+                FROM (
+                    SELECT value FROM json_each(offchain_metadata.urls)
+                    UNION
+                    SELECT value FROM json_each(excluded.urls)
+                )
+            )
+        "#,
+    )
+    .bind(metadata_hash.to_vec())
+    .bind(Json(urls))
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+fn extract_offchain_metadata(
+    metadata: &ParsedMetadata,
+) -> Result<Option<(Bytes32, Vec<String>)>, CliError> {
+    let Some(metadata_hash_value) = metadata.0.get("mh") else {
+        return Ok(None);
+    };
+    let Some(urls_value) = metadata.0.get("mu") else {
+        return Ok(None);
+    };
+
+    let metadata_hash = parse_metadata_hash(metadata_hash_value)?;
+    let urls = parse_metadata_urls(urls_value);
+
+    Ok(Some((metadata_hash, urls)))
+}
+
+fn parse_metadata_hash(value: &MetadataValue) -> Result<Bytes32, CliError> {
+    match value {
+        MetadataValue::Bytes32(hash) => Ok(*hash),
+        MetadataValue::String(raw) => {
+            let normalized = raw.trim_start_matches("0x");
+            let bytes = hex::decode(normalized).map_err(|err| {
+                CliError::Message(format!("invalid metadata hash hex in mh: {err}"))
+            })?;
+            if bytes.len() != 32 {
+                return Err(CliError::Message(format!(
+                    "invalid metadata hash length in mh: {}, expected 32",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Ok(Bytes32::new(arr))
+        }
+        _ => Err(CliError::Message(
+            "invalid metadata hash in mh: expected Bytes32 or hex string".to_string(),
+        )),
+    }
+}
+
+fn parse_metadata_urls(value: &MetadataValue) -> Vec<String> {
+    let urls = match value {
+        MetadataValue::StringArray(urls) => urls.clone(),
+        MetadataValue::String(url) => vec![url.clone()],
+        _ => Vec::new(),
+    };
+
+    let mut unique = BTreeSet::new();
+    for url in urls.into_iter().filter(|url| !url.is_empty()) {
+        unique.insert(url);
+    }
+    unique.into_iter().collect()
 }
 
 pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
