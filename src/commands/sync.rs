@@ -1,9 +1,12 @@
 use std::collections::HashSet;
 
+use chia_wallet_sdk::chia::puzzle_types::singleton::LauncherSolution;
 use chia_wallet_sdk::driver::{Nft, Puzzle, SpendContext};
 use chia_wallet_sdk::prelude::{Bytes32, ChiaRpcClient, Coin, CoinRecord, CoinsetClient};
 use chia_wallet_sdk::puzzles::SINGLETON_LAUNCHER_HASH;
 use chia_wallet_sdk::types::{Condition, Conditions, announcement_id};
+use clvmr::NodePtr;
+use clvmr::serde::node_to_bytes;
 use sqlx::SqlitePool;
 
 use crate::cli::SyncArgs;
@@ -181,15 +184,73 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             match coin_data.coin_type {
                 CoinType::Nft => {
                     let puzzle = Puzzle::parse(ctx, puzzle);
-                    let Some(new_nft) = Nft::parse_child(ctx, coin_record.coin, puzzle, solution)?
-                    else {
-                        return Err(CliError::Message(format!(
-                            "failed to parse child NFT for coin 0x{}",
-                            hex::encode(coin_data.coin_id)
-                        )));
+                    let new_nft = if coin_spend.coin.puzzle_hash == SINGLETON_LAUNCHER_HASH.into() {
+                        println!("launcher!"); // todo: debug
+                        let sol = ctx.extract::<LauncherSolution<NodePtr>>(solution)?;
+                        let new_coin = Coin::new(
+                            coin_spend.coin.coin_id(),
+                            sol.singleton_puzzle_hash,
+                            sol.amount,
+                        );
+                        let Ok(resp) = client.get_coin_record_by_name(new_coin.coin_id()).await
+                        else {
+                            continue;
+                        };
+                        let Some(new_coin_record) = resp.coin_record else {
+                            continue;
+                        };
+                        if !new_coin_record.spent {
+                            continue;
+                        }
+                        let Some(new_coin_spend) = client
+                            .get_puzzle_and_solution(
+                                new_coin_record.coin.coin_id(),
+                                Some(new_coin_record.spent_block_index),
+                            )
+                            .await?
+                            .coin_solution
+                        else {
+                            return Err(CliError::Message(format!(
+                                "failed to get puzzle and solution for new coin 0x{}",
+                                hex::encode(new_coin.coin_id())
+                            )));
+                        };
+
+                        let new_puzzle = ctx.alloc(&new_coin_spend.puzzle_reveal)?;
+                        let new_puzzle = Puzzle::parse(ctx, new_puzzle);
+                        let new_solution = ctx.alloc(&new_coin_spend.solution)?;
+
+                        if let Some((new_nft, _, _)) =
+                            Nft::parse(ctx, new_coin, new_puzzle, new_solution)?
+                        {
+                            new_nft
+                        } else {
+                            return Err(CliError::Message(format!(
+                                "failed to parse NFT for coin 0x{}",
+                                hex::encode(coin_data.coin_id)
+                            )));
+                        }
+                    } else {
+                        println!("not launcher!"); // todo: debug
+                        let Some(new_nft) =
+                            Nft::parse_child(ctx, coin_record.coin, puzzle, solution)?
+                        else {
+                            return Err(CliError::Message(format!(
+                                "failed to parse child NFT for coin 0x{}",
+                                hex::encode(coin_data.coin_id)
+                            )));
+                        };
+
+                        new_nft
                     };
 
+                    println!("parsing metadata..."); // todo: debug
+                    println!(
+                        "{}",
+                        hex::encode(node_to_bytes(ctx, new_nft.info.metadata.ptr()).unwrap())
+                    );
                     let metadata = ctx.extract::<ParsedMetadata>(new_nft.info.metadata.ptr())?;
+                    println!("adding to db..."); // todo: debug
                     db::add_coin_to_db(
                         pool,
                         CoinType::Nft,

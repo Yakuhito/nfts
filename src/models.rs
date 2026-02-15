@@ -1,4 +1,4 @@
-use chia_wallet_sdk::prelude::Bytes32;
+use chia_wallet_sdk::prelude::{Bytes, Bytes32};
 use clvm_traits::{ClvmDecoder, ClvmEncoder, FromClvm, FromClvmError, Raw, ToClvm, ToClvmError};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
@@ -35,10 +35,12 @@ pub struct ParsedMetadata(pub BTreeMap<String, MetadataValue>);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MetadataValue {
-    String(String),
-    StringArray(Vec<String>),
     Number(u64),
     Bytes32(Bytes32),
+    String(String),
+    StringArray(Vec<String>),
+    Bytes(Bytes),
+    BytesArray(Vec<Bytes>),
 }
 
 impl MetadataValue {
@@ -47,15 +49,18 @@ impl MetadataValue {
         node: N,
     ) -> Result<Self, FromClvmError> {
         if let Ok(value) = Bytes32::from_clvm(decoder, node.clone()) {
-            return Ok(Self::Bytes32(value));
+            Ok(Self::Bytes32(value))
         } else if let Ok(value) = u64::from_clvm(decoder, node.clone()) {
-            return Ok(Self::Number(value));
+            Ok(Self::Number(value))
         } else if let Ok(value) = String::from_clvm(decoder, node.clone()) {
-            return Ok(Self::String(value));
+            Ok(Self::String(value))
+        } else if let Ok(values) = Vec::<String>::from_clvm(decoder, node.clone()) {
+            Ok(Self::StringArray(values))
+        } else if let Ok(value) = Bytes::from_clvm(decoder, node.clone()) {
+            Ok(Self::Bytes(value))
+        } else {
+            Ok(Self::BytesArray(Vec::<Bytes>::from_clvm(decoder, node)?))
         }
-
-        let values = Vec::<String>::from_clvm(decoder, node)?;
-        Ok(Self::StringArray(values))
     }
 }
 
@@ -72,6 +77,8 @@ impl<N, E: ClvmEncoder<Node = N>> ToClvm<E> for MetadataValue {
             Self::StringArray(values) => values.to_clvm(encoder),
             Self::Number(value) => value.to_clvm(encoder),
             Self::Bytes32(value) => value.to_clvm(encoder),
+            Self::Bytes(value) => value.to_clvm(encoder),
+            Self::BytesArray(values) => values.to_clvm(encoder),
         }
     }
 }
