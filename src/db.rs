@@ -134,3 +134,21 @@ pub async fn update_tracked_puzzle_hash_sync_height(
 
     Ok(())
 }
+
+pub async fn update_coin_spent_height(
+    pool: &SqlitePool,
+    coin_id: &Bytes32,
+    spent_height: u32,
+) -> Result<(), CliError> {
+    sqlx::query(
+        r#"
+        UPDATE coins SET spent_height = ?1 WHERE coin_id = ?2
+        "#,
+    )
+    .bind(spent_height)
+    .bind(coin_id.to_vec())
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}

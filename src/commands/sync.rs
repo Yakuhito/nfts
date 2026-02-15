@@ -1,5 +1,7 @@
-use chia_wallet_sdk::prelude::{ChiaRpcClient, CoinRecord, CoinsetClient};
+use chia_wallet_sdk::driver::SpendContext;
+use chia_wallet_sdk::prelude::{Bytes32, ChiaRpcClient, Coin, CoinRecord, CoinsetClient};
 use chia_wallet_sdk::puzzles::SINGLETON_LAUNCHER_HASH;
+use chia_wallet_sdk::types::{Condition, Conditions};
 use sqlx::SqlitePool;
 
 use crate::cli::SyncArgs;
@@ -9,7 +11,9 @@ use crate::models::{Coin as DbCoin, CoinType, TrackedPuzzleHash};
 
 pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
     let client = CoinsetClient::mainnet();
-    let (puzzle_hashes, unspent_db_coins) = collect_sync_targets(pool).await?;
+    let puzzle_hashes = fetch_tracked_puzzle_hashes(pool).await?;
+    let puzzle_hashes_to_follow: Vec<Bytes32> =
+        puzzle_hashes.iter().map(|p| p.puzzle_hash).collect();
 
     let Some(status) = client.get_blockchain_state().await?.blockchain_state else {
         return Err(CliError::Message(
@@ -41,7 +45,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
 
         let Some(coin_records) = client
             .get_coin_records_by_puzzle_hashes(
-                puzzle_hashes.iter().map(|p| p.puzzle_hash).collect(),
+                puzzle_hashes_to_follow.clone(),
                 start_height,
                 end_height,
                 Some(true),
@@ -96,15 +100,125 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             .await?;
         }
     }
-    Ok(())
-}
 
-pub async fn collect_sync_targets(
-    pool: &SqlitePool,
-) -> Result<(Vec<TrackedPuzzleHash>, Vec<DbCoin>), CliError> {
-    let tracked_puzzle_hashes = fetch_tracked_puzzle_hashes(pool).await?;
-    let unspent_coins = fetch_unspent_coins(pool).await?;
-    Ok((tracked_puzzle_hashes, unspent_coins))
+    loop {
+        println!("New sync loop: fetching unspent coins...");
+        let unspent_coins = fetch_unspent_coins(pool).await?;
+
+        let mut spent_coin_records: Vec<(CoinRecord, &DbCoin)> = Vec::new();
+        println!(
+            "Fetching a total of {} unspent coin records...",
+            unspent_coins.len()
+        );
+
+        for (batch_no, coin_data) in unspent_coins.chunks(args.batch_size).enumerate() {
+            let coin_ids = coin_data.iter().map(|c| c.coin_id).collect::<Vec<_>>();
+            println!(
+                "Fetching {} coin records for batch #{batch_no}...",
+                coin_ids.len()
+            );
+            let Some(coin_records) = client
+                .get_coin_records_by_names(coin_ids.to_vec(), None, None, Some(true))
+                .await?
+                .coin_records
+            else {
+                return Err(CliError::Message(
+                    "failed to get coin records for batch #{batch_no}".to_string(),
+                ));
+            };
+
+            spent_coin_records.extend(
+                coin_records
+                    .into_iter()
+                    .zip(coin_data)
+                    .filter(|c| c.0.spent),
+            );
+        }
+
+        if spent_coin_records.is_empty() {
+            println!("No spent coin records found. Sync complete!");
+            break;
+        }
+
+        println!(
+            "Fetching solutions for and processing {} spent coin records...",
+            spent_coin_records.len()
+        );
+        for (coin_record, coin_data) in spent_coin_records {
+            let Some(coin_spend) = client
+                .get_puzzle_and_solution(
+                    coin_record.coin.coin_id(),
+                    Some(coin_record.spent_block_index),
+                )
+                .await?
+                .coin_solution
+            else {
+                return Err(CliError::Message(
+                    "failed to get puzzle and solution for coin record".to_string(),
+                ));
+            };
+
+            let ctx = &mut SpendContext::new();
+            let puzzle = ctx.alloc(&coin_spend.puzzle_reveal)?;
+            let solution = ctx.alloc(&coin_spend.solution)?;
+
+            match coin_data.coin_type {
+                CoinType::Nft => {
+                    // TODO: parse NFTs
+                }
+                CoinType::Did => {
+                    // TODO: parse DIDs
+                }
+                CoinType::IntermediaryCoin => {
+                    let res = ctx.run(puzzle, solution)?;
+                    let output_conds = ctx.extract::<Conditions>(res)?;
+                    for cond in output_conds.iter() {
+                        if let Condition::CreateCoin(cc) = cond {
+                            if puzzle_hashes_to_follow.contains(&coin_data.puzzle_hash)
+                                && cc.puzzle_hash != SINGLETON_LAUNCHER_HASH.into()
+                            {
+                                // When following an address, we only follow launchers created
+                                //   directly by that address.
+                                continue;
+                            }
+
+                            let new_coin = Coin::new(coin_data.coin_id, cc.puzzle_hash, cc.amount);
+                            let (coin_type, launcher_id) =
+                                if new_coin.puzzle_hash != SINGLETON_LAUNCHER_HASH.into() {
+                                    (CoinType::IntermediaryCoin, None)
+                                } else {
+                                    // singleton launcher!
+                                    (CoinType::Nft, Some(new_coin.coin_id()))
+                                };
+                            db::add_coin_to_db(
+                                pool,
+                                coin_type,
+                                launcher_id,
+                                None,
+                                &CoinRecord {
+                                    coin: new_coin,
+                                    confirmed_block_index: coin_record.spent_block_index,
+                                    spent_block_index: 0,
+                                    spent: false,
+                                    coinbase: false,
+                                    timestamp: coin_record.timestamp,
+                                },
+                            )
+                            .await?;
+                            db::update_coin_spent_height(
+                                pool,
+                                &coin_data.coin_id,
+                                coin_record.spent_block_index,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn fetch_tracked_puzzle_hashes(
