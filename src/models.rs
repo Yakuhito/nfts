@@ -22,7 +22,7 @@ pub struct Coin {
 pub enum CoinType {
     Nft = 1,
     Did = 2,
-    Intermediary = 3,
+    IntermediaryCoin = 3,
 }
 
 impl CoinType {
@@ -30,7 +30,7 @@ impl CoinType {
         match self {
             Self::Nft => "NFT",
             Self::Did => "DID",
-            Self::Intermediary => "Intermediary Coin",
+            Self::IntermediaryCoin => "ITR",
         }
     }
 
@@ -38,7 +38,7 @@ impl CoinType {
         match value {
             "NFT" => Some(Self::Nft),
             "DID" => Some(Self::Did),
-            "Intermediary Coin" => Some(Self::Intermediary),
+            "ITR" => Some(Self::IntermediaryCoin),
             _ => None,
         }
     }

@@ -39,7 +39,7 @@ impl TrackedKind {
         match self {
             Self::Nft => CoinType::Nft,
             Self::Did => CoinType::Did,
-            Self::PuzzleHash => CoinType::Intermediary,
+            Self::PuzzleHash => CoinType::IntermediaryCoin,
         }
     }
 }

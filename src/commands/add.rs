@@ -22,7 +22,7 @@ async fn collect_entries(value: &str) -> Result<Vec<(Bytes32, TrackedKind)>, Cli
         for raw in value.split(',').map(str::trim).filter(|v| !v.is_empty()) {
             let Some(kind) = classify_prefixed_launcher_id(raw) else {
                 return Err(CliError::Message(format!(
-                    "invalid launcher id in comma-separated input (must start with nft or did:chia:): {raw}"
+                    "invalid launcher id in comma-separated input (must start with nft or did:chia: or xch): {raw}"
                 )));
             };
             out.push((Address::decode(raw)?.puzzle_hash, kind));
@@ -46,7 +46,7 @@ async fn collect_entries(value: &str) -> Result<Vec<(Bytes32, TrackedKind)>, Cli
             out.push((Address::decode(raw)?.puzzle_hash, kind));
         } else {
             println!(
-                "Skipping line {}: '{}' is not a valid NFT/DID launcher id prefix",
+                "Skipping line {}: '{}' is not a valid NFT/DID launcher id/address prefix",
                 idx + 1,
                 raw
             );
