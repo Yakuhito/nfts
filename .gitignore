@@ -27,3 +27,4 @@ target
 
 # yak added
 *.db
+*.db-journal

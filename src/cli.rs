@@ -19,6 +19,8 @@ pub enum Command {
     List(ListArgs),
     /// Add launcher ids to tracking
     Add(AddArgs),
+    /// Sync tracked items
+    Sync(SyncArgs),
 }
 
 #[derive(Args, Debug)]
@@ -38,4 +40,14 @@ pub struct ListArgs {
 pub struct AddArgs {
     /// Comma-separated IDs (nft... / did:chia:...) OR a file path
     pub value: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SyncArgs {
+    /// Size of batch when querying coin records
+    #[arg(long, default_value_t = 500)]
+    pub batch_size: usize,
+    /// Do not query for new puzzle hash coins before syncing database coins
+    #[arg(long)]
+    pub skip_puzzle_hash_sync: bool,
 }

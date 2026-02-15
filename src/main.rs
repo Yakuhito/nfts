@@ -28,6 +28,7 @@ async fn main() -> Result<(), CliError> {
     match cli.command {
         Command::List(args) => commands::list::run(&pool, args).await?,
         Command::Add(args) => commands::add::run(&pool, args).await?,
+        Command::Sync(args) => commands::sync::run(&pool, args).await?,
     }
 
     Ok(())
