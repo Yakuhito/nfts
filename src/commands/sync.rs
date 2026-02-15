@@ -299,26 +299,19 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     )));
                                 };
 
-                                if new_nft.info.current_owner != coin_data.did_launcher_id {
+                                if new_nft.info.current_owner != coin_data.launcher_id {
                                     continue; // minter DID not assigned as owner
                                 }
                                 if current_nft.coin.parent_coin_info != new_nft.info.launcher_id {
-                                    println!(
-                                        "Minter DID not assigned as owner of NFT exactly after mint for coin 0x{}",
-                                        hex::encode(coin_data.coin_id)
-                                    );
+                                    // Needs to be in the first spend, otherwise the NFT is not 'minted' by the DID
                                     continue;
                                 }
 
-                                println!(
-                                    "Adding NFT minted in the old way with id {}",
-                                    encode_nft_launcher_id(&new_nft.info.launcher_id)?
-                                );
                                 db::add_coin_to_db(
                                     pool,
                                     CoinType::Nft,
                                     Some(new_nft.info.launcher_id),
-                                    coin_data.did_launcher_id,
+                                    coin_data.launcher_id, // DID's launcher id
                                     &CoinRecord {
                                         coin: current_nft.coin,
                                         confirmed_block_index: coin_record.spent_block_index,
@@ -331,6 +324,10 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     },
                                 )
                                 .await?;
+                                println!(
+                                    "Added NFT minted in the old way with id {}",
+                                    encode_nft_launcher_id(&new_nft.info.launcher_id)?
+                                );
                             }
                         }
                     }
