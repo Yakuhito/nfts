@@ -2,7 +2,7 @@ use sqlx::SqlitePool;
 
 use crate::cli::{AddArgs, AddInputArgs, AddKind};
 use crate::error::CliError;
-use crate::utils::parse_launcher_id;
+use crate::utils::{parse_launcher_id, zero_bytes32};
 
 pub async fn run(pool: &SqlitePool, args: AddArgs) -> Result<(), CliError> {
     match args.kind {
@@ -16,6 +16,7 @@ async fn add_nfts(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
     let ids = collect_input_ids(input).await?;
     for raw_id in ids {
         let launcher_id = parse_launcher_id(&raw_id)?;
+        let placeholder = zero_bytes32();
 
         // TODO(yakuhito): Resolve launcher_id through coinset/chia-wallet-sdk into
         // the full NFT object (coin lineage, inner_puzzle_hash, did linkage),
@@ -23,11 +24,14 @@ async fn add_nfts(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
         sqlx::query(
             r#"
             INSERT INTO nfts (launcher_id, did_launcher_id, parent_coin_id, coin_id, inner_puzzle_hash, spent_height)
-            VALUES (?1, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?1, NULL, ?2, ?3, ?4, NULL)
             ON CONFLICT(launcher_id) DO NOTHING
             "#,
         )
         .bind(launcher_id.to_vec())
+        .bind(placeholder.to_vec())
+        .bind(placeholder.to_vec())
+        .bind(placeholder.to_vec())
         .execute(pool)
         .await?;
     }
@@ -38,6 +42,7 @@ async fn add_dids(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
     let ids = collect_input_ids(input).await?;
     for raw_id in ids {
         let launcher_id = parse_launcher_id(&raw_id)?;
+        let placeholder = zero_bytes32();
 
         // TODO(yakuhito): Resolve launcher_id through coinset/chia-wallet-sdk into
         // the full DID object (coin lineage and current spend state),
@@ -45,11 +50,13 @@ async fn add_dids(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
         sqlx::query(
             r#"
             INSERT INTO dids (launcher_id, parent_coin_id, coin_id, spent_height)
-            VALUES (?1, NULL, NULL, NULL)
+            VALUES (?1, ?2, ?3, NULL)
             ON CONFLICT(launcher_id) DO NOTHING
             "#,
         )
         .bind(launcher_id.to_vec())
+        .bind(placeholder.to_vec())
+        .bind(placeholder.to_vec())
         .execute(pool)
         .await?;
     }

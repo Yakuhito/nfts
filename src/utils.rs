@@ -1,5 +1,4 @@
-use bech32::{self, Bech32m, Hrp};
-use chia_wallet_sdk::prelude::Bytes32;
+use chia_wallet_sdk::{prelude::Bytes32, utils::Address};
 
 use crate::error::CliError;
 
@@ -32,22 +31,19 @@ pub fn parse_launcher_id(input: &str) -> Result<Bytes32, CliError> {
 }
 
 pub fn parse_bech32m_payload(value: &str) -> Result<Bytes32, CliError> {
-    let (_hrp, bytes) = bech32::decode(value)?;
-    if bytes.len() != 32 {
-        return Err(CliError::Message(format!(
-            "launcher id must decode to 32 bytes, got {} bytes: {value}",
-            bytes.len()
-        )));
-    }
-
-    let mut fixed = [0u8; 32];
-    fixed.copy_from_slice(&bytes);
-    Ok(Bytes32::new(fixed))
+    Ok(Address::decode(value)?.puzzle_hash)
 }
 
-pub fn encode_launcher_bech32m(launcher_id: &Bytes32, hrp: &str) -> Result<String, CliError> {
-    let hrp = Hrp::parse(hrp)?;
-    Ok(bech32::encode::<Bech32m>(hrp, launcher_id.as_ref())?)
+pub fn encode_nft_launcher_id(launcher_id: &Bytes32) -> Result<String, CliError> {
+    Ok(Address::new(*launcher_id, "nft".to_string()).encode()?)
+}
+
+pub fn encode_did_launcher_id(launcher_id: &Bytes32) -> Result<String, CliError> {
+    Ok(Address::new(*launcher_id, "did:chia:".to_string()).encode()?)
+}
+
+pub fn zero_bytes32() -> Bytes32 {
+    Bytes32::new([0u8; 32])
 }
 
 pub fn bytes32_from_db(field_name: &str, value: &[u8]) -> Result<Bytes32, CliError> {
@@ -67,7 +63,9 @@ pub fn optional_bytes32_from_db(
     field_name: &str,
     value: Option<&[u8]>,
 ) -> Result<Option<Bytes32>, CliError> {
-    value.map(|bytes| bytes32_from_db(field_name, bytes)).transpose()
+    value
+        .map(|bytes| bytes32_from_db(field_name, bytes))
+        .transpose()
 }
 
 fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {

@@ -7,8 +7,8 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
         r#"
         CREATE TABLE IF NOT EXISTS dids (
             launcher_id BLOB PRIMARY KEY NOT NULL,
-            parent_coin_id BLOB NULL,
-            coin_id BLOB NULL,
+            parent_coin_id BLOB NOT NULL,
+            coin_id BLOB NOT NULL,
             spent_height INTEGER NULL
         )
         "#,
@@ -33,9 +33,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
         CREATE TABLE IF NOT EXISTS nfts (
             launcher_id BLOB PRIMARY KEY NOT NULL,
             did_launcher_id BLOB NULL,
-            parent_coin_id BLOB NULL,
-            coin_id BLOB NULL,
-            inner_puzzle_hash BLOB NULL,
+            parent_coin_id BLOB NOT NULL,
+            coin_id BLOB NOT NULL,
+            inner_puzzle_hash BLOB NOT NULL,
             spent_height INTEGER NULL
         )
         "#,
