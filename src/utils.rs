@@ -1,0 +1,86 @@
+use bech32::{self, Bech32m, Hrp};
+use chia_wallet_sdk::prelude::Bytes32;
+
+use crate::error::CliError;
+
+pub fn parse_launcher_id(input: &str) -> Result<Bytes32, CliError> {
+    if input.starts_with("did:chia:") {
+        // Accept full DID bech32m string (`did:chia:...`) first.
+        if let Ok(value) = parse_bech32m_payload(input) {
+            return Ok(value);
+        }
+        // Also accept `did:chia:` URI prefix followed by plain launcher id value.
+        if let Some(stripped) = input.strip_prefix("did:chia:") {
+            return parse_launcher_id(stripped);
+        }
+    }
+
+    if input.starts_with("nft1") {
+        return parse_bech32m_payload(input);
+    }
+
+    if input.len() == 64 && input.chars().all(|c| c.is_ascii_hexdigit()) {
+        let bytes = decode_hex_32(input).ok_or_else(|| {
+            CliError::Message(format!(
+                "invalid hex launcher id (expected 32 bytes): {input}"
+            ))
+        })?;
+        return Ok(Bytes32::new(bytes));
+    }
+
+    parse_bech32m_payload(input)
+}
+
+pub fn parse_bech32m_payload(value: &str) -> Result<Bytes32, CliError> {
+    let (_hrp, bytes) = bech32::decode(value)?;
+    if bytes.len() != 32 {
+        return Err(CliError::Message(format!(
+            "launcher id must decode to 32 bytes, got {} bytes: {value}",
+            bytes.len()
+        )));
+    }
+
+    let mut fixed = [0u8; 32];
+    fixed.copy_from_slice(&bytes);
+    Ok(Bytes32::new(fixed))
+}
+
+pub fn encode_launcher_bech32m(launcher_id: &Bytes32, hrp: &str) -> Result<String, CliError> {
+    let hrp = Hrp::parse(hrp)?;
+    Ok(bech32::encode::<Bech32m>(hrp, launcher_id.as_ref())?)
+}
+
+pub fn bytes32_from_db(field_name: &str, value: &[u8]) -> Result<Bytes32, CliError> {
+    if value.len() != 32 {
+        return Err(CliError::Message(format!(
+            "{field_name} has invalid length {}, expected 32",
+            value.len()
+        )));
+    }
+
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(value);
+    Ok(Bytes32::new(bytes))
+}
+
+pub fn optional_bytes32_from_db(
+    field_name: &str,
+    value: Option<&[u8]>,
+) -> Result<Option<Bytes32>, CliError> {
+    value.map(|bytes| bytes32_from_db(field_name, bytes)).transpose()
+}
+
+fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+
+    let mut out = [0u8; 32];
+    for (idx, slot) in out.iter_mut().enumerate() {
+        let start = idx * 2;
+        let end = start + 2;
+        let part = &hex[start..end];
+        *slot = u8::from_str_radix(part, 16).ok()?;
+    }
+    Some(out)
+}
