@@ -150,6 +150,13 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             "Fetching solutions for and processing {} spent coin records...",
             spent_coin_records.len()
         );
+
+        if spent_coin_records.len() == 1 {
+            println!(
+                "Coin being processed: {}",
+                hex::encode(spent_coin_records[0].0.coin.coin_id())
+            );
+        }
         for (i, (coin_record, coin_data)) in spent_coin_records.iter().enumerate() {
             if i % 100 == 0 && i > 0 {
                 println!("Processed {} spent coin records...", i);

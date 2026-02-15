@@ -2121,6 +2121,7 @@ dependencies = [
  "chia-wallet-sdk",
  "clap",
  "clvmr",
+ "hex",
  "reqwest",
  "sqlx",
  "thiserror 2.0.18",
