@@ -1,15 +1,16 @@
 use std::collections::HashSet;
 
-use chia_wallet_sdk::driver::SpendContext;
+use chia_wallet_sdk::driver::{Nft, Puzzle, SpendContext};
 use chia_wallet_sdk::prelude::{Bytes32, ChiaRpcClient, Coin, CoinRecord, CoinsetClient};
 use chia_wallet_sdk::puzzles::SINGLETON_LAUNCHER_HASH;
-use chia_wallet_sdk::types::{Condition, Conditions};
+use chia_wallet_sdk::types::{Condition, Conditions, announcement_id};
 use sqlx::SqlitePool;
 
 use crate::cli::SyncArgs;
 use crate::db;
 use crate::error::CliError;
 use crate::models::{Coin as DbCoin, CoinType, TrackedPuzzleHash};
+use crate::utils::encode_nft_launcher_id;
 
 pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
     let client = CoinsetClient::mainnet();
@@ -186,6 +187,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                 CoinType::Did => {
                     let res = ctx.run(puzzle, solution)?;
                     let output_conds = ctx.extract::<Conditions>(res)?;
+
                     for cond in output_conds.iter() {
                         if let Condition::CreateCoin(cc) = cond {
                             let new_coin = Coin::new(coin_data.coin_id, cc.puzzle_hash, cc.amount);
@@ -234,6 +236,102 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 },
                             )
                             .await?;
+                        } else if let Condition::CreatePuzzleAnnouncement(cpa) = cond {
+                            // may be minting an NFT the old way
+                            let Some(block_record) = client
+                                .get_block_record_by_height(coin_record.spent_block_index)
+                                .await?
+                                .block_record
+                            else {
+                                return Err(CliError::Message(format!(
+                                    "failed to get block record for spent block with height {}",
+                                    coin_record.spent_block_index
+                                )));
+                            };
+                            let Some(block_spends) = client
+                                .get_block_spends(block_record.header_hash)
+                                .await?
+                                .block_spends
+                            else {
+                                return Err(CliError::Message(format!(
+                                    "failed to get block spends for block 0x{}",
+                                    hex::encode(block_record.header_hash)
+                                )));
+                            };
+
+                            let ann_id =
+                                announcement_id(coin_record.coin.puzzle_hash, cpa.message.to_vec());
+                            for spend in block_spends {
+                                if spend.coin.coin_id() == coin_record.coin.coin_id() {
+                                    continue;
+                                }
+
+                                let this_puzzle = ctx.alloc(&spend.puzzle_reveal)?;
+                                let this_solution = ctx.alloc(&spend.solution)?;
+                                let this_output = ctx.run(this_puzzle, this_solution)?;
+                                let this_conds = ctx.extract::<Conditions>(this_output)?;
+                                let is_ann_receiver = this_conds.iter().any(|c| {
+                                    if let Condition::AssertPuzzleAnnouncement(apa) = c {
+                                        apa.announcement_id == ann_id
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if !is_ann_receiver {
+                                    continue;
+                                }
+
+                                // this may be the old way of minting an NFT
+                                // by minting it in the same block from a wallet ph,
+                                //  then spending it and assigning its owner as the minter DID
+                                let this_puzzle = Puzzle::parse(ctx, this_puzzle);
+                                let Some(new_nft) =
+                                    Nft::parse_child(ctx, spend.coin, this_puzzle, this_solution)?
+                                else {
+                                    continue; // not an NFT
+                                };
+                                let Some((current_nft, _, _)) =
+                                    Nft::parse(ctx, spend.coin, this_puzzle, this_solution)?
+                                else {
+                                    return Err(CliError::Message(format!(
+                                        "failed to parse current NFT for coin 0x{}",
+                                        hex::encode(coin_data.coin_id)
+                                    )));
+                                };
+
+                                if new_nft.info.current_owner != coin_data.did_launcher_id {
+                                    continue; // minter DID not assigned as owner
+                                }
+                                if current_nft.coin.parent_coin_info != new_nft.info.launcher_id {
+                                    println!(
+                                        "Minter DID not assigned as owner of NFT exactly after mint for coin 0x{}",
+                                        hex::encode(coin_data.coin_id)
+                                    );
+                                    continue;
+                                }
+
+                                println!(
+                                    "Adding NFT minted in the old way with id {}",
+                                    encode_nft_launcher_id(&new_nft.info.launcher_id)?
+                                );
+                                db::add_coin_to_db(
+                                    pool,
+                                    CoinType::Nft,
+                                    Some(new_nft.info.launcher_id),
+                                    coin_data.did_launcher_id,
+                                    &CoinRecord {
+                                        coin: current_nft.coin,
+                                        confirmed_block_index: coin_record.spent_block_index,
+                                        spent_block_index: 0,
+                                        spent: false,
+                                        coinbase: false,
+                                        timestamp: block_record
+                                            .timestamp
+                                            .unwrap_or(coin_record.timestamp),
+                                    },
+                                )
+                                .await?;
+                            }
                         }
                     }
                     db::update_coin_spent_height(
