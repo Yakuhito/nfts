@@ -41,8 +41,6 @@ async fn fetch_dids(pool: &SqlitePool) -> Result<Vec<Did>, CliError> {
         SELECT launcher_id, parent_coin_id, coin_id, spent_height
         FROM dids
         WHERE spent_height IS NULL
-          AND parent_coin_id IS NOT NULL
-          AND coin_id IS NOT NULL
         ORDER BY launcher_id
         "#,
     )
@@ -75,9 +73,6 @@ async fn fetch_nfts(pool: &SqlitePool) -> Result<Vec<Nft>, CliError> {
         FROM nfts
         WHERE spent_height IS NULL
           AND did_launcher_id IS NULL
-          AND parent_coin_id IS NOT NULL
-          AND coin_id IS NOT NULL
-          AND inner_puzzle_hash IS NOT NULL
         ORDER BY launcher_id
         "#,
     )

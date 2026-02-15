@@ -1,8 +1,9 @@
+use chia_wallet_sdk::prelude::Bytes32;
 use sqlx::SqlitePool;
 
 use crate::cli::{AddArgs, AddInputArgs, AddKind};
 use crate::error::CliError;
-use crate::utils::{parse_launcher_id, zero_bytes32};
+use crate::utils::parse_launcher_id;
 
 pub async fn run(pool: &SqlitePool, args: AddArgs) -> Result<(), CliError> {
     match args.kind {
@@ -16,7 +17,7 @@ async fn add_nfts(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
     let ids = collect_input_ids(input).await?;
     for raw_id in ids {
         let launcher_id = parse_launcher_id(&raw_id)?;
-        let placeholder = zero_bytes32();
+        let placeholder = Bytes32::default();
 
         // TODO(yakuhito): Resolve launcher_id through coinset/chia-wallet-sdk into
         // the full NFT object (coin lineage, inner_puzzle_hash, did linkage),
@@ -42,7 +43,7 @@ async fn add_dids(pool: &SqlitePool, input: &AddInputArgs) -> Result<(), CliErro
     let ids = collect_input_ids(input).await?;
     for raw_id in ids {
         let launcher_id = parse_launcher_id(&raw_id)?;
-        let placeholder = zero_bytes32();
+        let placeholder = Bytes32::default();
 
         // TODO(yakuhito): Resolve launcher_id through coinset/chia-wallet-sdk into
         // the full DID object (coin lineage and current spend state),
