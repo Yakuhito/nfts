@@ -5,7 +5,7 @@ use crate::models::{
     Coin as DbCoin, CoinType, OffchainMetadata, ParsedMetadata, TrackedPuzzleHash,
 };
 use crate::utils::{bytes32_from_db, optional_bytes32_from_db};
-use chia_wallet_sdk::prelude::{Bytes32, CoinRecord};
+use chia_wallet_sdk::prelude::{Bytes32, Coin};
 use serde_json::Value as JsonValue;
 
 pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
@@ -60,7 +60,8 @@ pub async fn add_coin_to_db(
     coin_type: CoinType,
     launcher_id: Option<Bytes32>,
     did_launcher_id: Option<Bytes32>,
-    coin_record: &CoinRecord,
+    coin: &Coin,
+    created_height: u32,
     metadata: Option<ParsedMetadata>,
 ) -> Result<(), CliError> {
     let metadata_json = metadata
@@ -75,22 +76,17 @@ pub async fn add_coin_to_db(
     sqlx::query(
         r#"
         INSERT INTO coins (type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?9)
         ON CONFLICT(coin_id) DO NOTHING
         "#,
     )
     .bind(coin_type.as_db_str())
     .bind(launcher_id.map(|id| id.to_vec()))
     .bind(did_launcher_id.map(|id| id.to_vec()))
-    .bind(coin_record.coin.parent_coin_info.to_vec())
-    .bind(coin_record.coin.puzzle_hash.to_vec())
-    .bind(coin_record.coin.coin_id().to_vec())
-    .bind(coin_record.confirmed_block_index)
-    .bind(if coin_record.spent_block_index == 0 {
-        None
-    } else {
-        Some(coin_record.spent_block_index)
-    })
+    .bind(coin.parent_coin_info.to_vec())
+    .bind(coin.puzzle_hash.to_vec())
+    .bind(coin.coin_id().to_vec())
+    .bind(created_height)
     .bind(metadata_json)
     .execute(pool)
     .await?;

@@ -82,14 +82,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                 coin_type,
                 launcher_id,
                 None,
-                &CoinRecord {
-                    coin: coin_record.coin,
-                    confirmed_block_index: coin_record.confirmed_block_index,
-                    spent_block_index: 0,
-                    spent: false,
-                    coinbase: coin_record.coinbase,
-                    timestamp: coin_record.timestamp,
-                },
+                &coin_record.coin,
+                coin_record.confirmed_block_index,
                 None,
             )
             .await?;
@@ -186,7 +180,32 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
 
             match coin_data.coin_type {
                 CoinType::Nft => {
-                    // TODO: parse NFTs
+                    let puzzle = Puzzle::parse(ctx, puzzle);
+                    let Some(new_nft) = Nft::parse_child(ctx, coin_record.coin, puzzle, solution)?
+                    else {
+                        return Err(CliError::Message(format!(
+                            "failed to parse child NFT for coin 0x{}",
+                            hex::encode(coin_data.coin_id)
+                        )));
+                    };
+
+                    let metadata = ctx.extract::<ParsedMetadata>(new_nft.info.metadata.ptr())?;
+                    db::add_coin_to_db(
+                        pool,
+                        CoinType::Nft,
+                        Some(new_nft.info.launcher_id),
+                        coin_data.did_launcher_id,
+                        &new_nft.coin,
+                        coin_record.spent_block_index,
+                        Some(metadata),
+                    )
+                    .await?;
+                    db::update_coin_spent_height(
+                        pool,
+                        &coin_data.coin_id,
+                        coin_record.spent_block_index,
+                    )
+                    .await?;
                 }
                 CoinType::Did => {
                     let res = ctx.run(puzzle, solution)?;
@@ -203,14 +222,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     CoinType::Did,
                                     coin_data.launcher_id,
                                     coin_data.did_launcher_id,
-                                    &CoinRecord {
-                                        coin: new_coin,
-                                        confirmed_block_index: coin_record.spent_block_index,
-                                        spent_block_index: 0,
-                                        spent: false,
-                                        coinbase: false,
-                                        timestamp: coin_record.timestamp,
-                                    },
+                                    &new_coin,
+                                    coin_record.spent_block_index,
                                     None,
                                 )
                                 .await?;
@@ -231,14 +244,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 coin_type,
                                 launcher_id,
                                 coin_data.launcher_id, // DID launcher id is the DID's launcher id property :)
-                                &CoinRecord {
-                                    coin: new_coin,
-                                    confirmed_block_index: coin_record.spent_block_index,
-                                    spent_block_index: 0,
-                                    spent: false,
-                                    coinbase: false,
-                                    timestamp: coin_record.timestamp,
-                                },
+                                &new_coin,
+                                coin_record.spent_block_index,
                                 None,
                             )
                             .await?;
@@ -314,22 +321,14 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 }
 
                                 let metadata =
-                                    ctx.extract::<ParsedMetadata>(new_nft.info.metadata.ptr())?;
+                                    ctx.extract::<ParsedMetadata>(current_nft.info.metadata.ptr())?;
                                 db::add_coin_to_db(
                                     pool,
                                     CoinType::Nft,
                                     Some(new_nft.info.launcher_id),
                                     coin_data.launcher_id, // DID's launcher id
-                                    &CoinRecord {
-                                        coin: current_nft.coin,
-                                        confirmed_block_index: coin_record.spent_block_index,
-                                        spent_block_index: 0,
-                                        spent: false,
-                                        coinbase: false,
-                                        timestamp: block_record
-                                            .timestamp
-                                            .unwrap_or(coin_record.timestamp),
-                                    },
+                                    &current_nft.coin,
+                                    coin_record.spent_block_index,
                                     Some(metadata),
                                 )
                                 .await?;
@@ -373,14 +372,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 coin_type,
                                 launcher_id,
                                 None,
-                                &CoinRecord {
-                                    coin: new_coin,
-                                    confirmed_block_index: coin_record.spent_block_index,
-                                    spent_block_index: 0,
-                                    spent: false,
-                                    coinbase: false,
-                                    timestamp: coin_record.timestamp,
-                                },
+                                &new_coin,
+                                coin_record.spent_block_index,
                                 None,
                             )
                             .await?;
