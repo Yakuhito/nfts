@@ -9,7 +9,7 @@ use sqlx::SqlitePool;
 use crate::cli::SyncArgs;
 use crate::db;
 use crate::error::CliError;
-use crate::models::{Coin as DbCoin, CoinType, TrackedPuzzleHash};
+use crate::models::{Coin as DbCoin, CoinType, ParsedMetadata, TrackedPuzzleHash};
 use crate::utils::encode_nft_launcher_id;
 
 pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
@@ -90,6 +90,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                     coinbase: coin_record.coinbase,
                     timestamp: coin_record.timestamp,
                 },
+                None,
             )
             .await?;
         }
@@ -207,6 +208,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                         coinbase: false,
                                         timestamp: coin_record.timestamp,
                                     },
+                                    None,
                                 )
                                 .await?;
 
@@ -234,6 +236,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     coinbase: false,
                                     timestamp: coin_record.timestamp,
                                 },
+                                None,
                             )
                             .await?;
                         } else if let Condition::CreatePuzzleAnnouncement(cpa) = cond {
@@ -307,6 +310,13 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     continue;
                                 }
 
+                                println!(
+                                    "New NFT launcher id: {}",
+                                    encode_nft_launcher_id(&new_nft.info.launcher_id)?
+                                );
+                                let metadata =
+                                    ctx.extract::<ParsedMetadata>(new_nft.info.metadata.ptr())?;
+                                println!("Metadata: {:#?}", metadata);
                                 db::add_coin_to_db(
                                     pool,
                                     CoinType::Nft,
@@ -322,6 +332,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                             .timestamp
                                             .unwrap_or(coin_record.timestamp),
                                     },
+                                    Some(metadata),
                                 )
                                 .await?;
                                 println!(
@@ -372,6 +383,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     coinbase: false,
                                     timestamp: coin_record.timestamp,
                                 },
+                                None,
                             )
                             .await?;
                         }

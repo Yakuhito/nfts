@@ -2120,6 +2120,7 @@ version = "0.1.0"
 dependencies = [
  "chia-wallet-sdk",
  "clap",
+ "clvm-traits 0.36.1",
  "clvmr",
  "hex",
  "reqwest",

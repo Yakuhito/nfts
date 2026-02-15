@@ -1,9 +1,12 @@
-use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
+use sqlx::{Row, SqlitePool, sqlite::SqliteRow, types::Json};
 
 use crate::error::CliError;
-use crate::models::{Coin as DbCoin, CoinType, Metadata, OffchainMetadata, TrackedPuzzleHash};
+use crate::models::{
+    Coin as DbCoin, CoinType, OffchainMetadata, ParsedMetadata, TrackedPuzzleHash,
+};
 use crate::utils::{bytes32_from_db, optional_bytes32_from_db};
 use chia_wallet_sdk::prelude::{Bytes32, CoinRecord};
+use serde_json::Value as JsonValue;
 
 pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
     sqlx::query(
@@ -58,11 +61,21 @@ pub async fn add_coin_to_db(
     launcher_id: Option<Bytes32>,
     did_launcher_id: Option<Bytes32>,
     coin_record: &CoinRecord,
+    metadata: Option<ParsedMetadata>,
 ) -> Result<(), CliError> {
+    let metadata_json = metadata
+        .map(|metadata| {
+            serde_json::to_value(metadata).map_err(|err| {
+                CliError::Message(format!("failed to serialize coin metadata as JSON: {err}"))
+            })
+        })
+        .transpose()?
+        .map(Json);
+
     sqlx::query(
         r#"
-        INSERT INTO coins (type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        INSERT INTO coins (type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ON CONFLICT(coin_id) DO NOTHING
         "#,
     )
@@ -78,6 +91,7 @@ pub async fn add_coin_to_db(
     } else {
         Some(coin_record.spent_block_index)
     })
+    .bind(metadata_json)
     .execute(pool)
     .await?;
 
@@ -95,7 +109,9 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
     let coin_type_raw = row.get::<String, _>("type");
     let coin_type = CoinType::from_db_str(&coin_type_raw)
         .ok_or_else(|| CliError::Message(format!("invalid coin type in db: {coin_type_raw}")))?;
-    let metadata = parse_coin_metadata(row.get::<Option<String>, _>("metadata"))?;
+    let metadata = row
+        .get::<Option<Json<JsonValue>>, _>("metadata")
+        .map(|json| json.0);
 
     Ok(DbCoin {
         coin_type,
@@ -119,16 +135,6 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
     })
 }
 
-fn parse_coin_metadata(raw_metadata: Option<String>) -> Result<Option<Metadata>, CliError> {
-    raw_metadata
-        .map(|raw| {
-            serde_json::from_str::<Metadata>(&raw).map_err(|err| {
-                CliError::Message(format!("invalid coin metadata JSON in db: {err}"))
-            })
-        })
-        .transpose()
-}
-
 pub fn row_to_tracked_puzzle_hash(row: &SqliteRow) -> Result<TrackedPuzzleHash, CliError> {
     let last_sync_height = row
         .get::<i64, _>("last_sync_height")
@@ -150,8 +156,7 @@ pub fn row_to_offchain_metadata(row: &SqliteRow) -> Result<OffchainMetadata, Cli
         .get::<i64, _>("retries_so_far")
         .try_into()
         .map_err(|_| CliError::Message("invalid retries_so_far in db".to_string()))?;
-    let urls = serde_json::from_str::<Vec<String>>(&row.get::<String, _>("urls"))
-        .map_err(|err| CliError::Message(format!("invalid offchain metadata urls JSON: {err}")))?;
+    let urls = row.get::<Json<Vec<String>>, _>("urls").0;
     let next_retry = row
         .get::<Option<i64>, _>("next_retry")
         .map(|v| {
