@@ -1,4 +1,7 @@
 use chia_wallet_sdk::prelude::Bytes32;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct TrackedPuzzleHash {
@@ -7,6 +10,7 @@ pub struct TrackedPuzzleHash {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Coin {
     pub coin_type: CoinType,
     pub launcher_id: Option<Bytes32>,
@@ -16,6 +20,26 @@ pub struct Coin {
     pub coin_id: Bytes32,
     pub created_height: u32,
     pub spent_height: Option<u32>,
+    pub metadata: Option<Metadata>,
+}
+
+pub type Metadata = BTreeMap<String, MetadataValue>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MetadataValue {
+    String(String),
+    StringArray(Vec<String>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct OffchainMetadata {
+    pub metadata_hash: Bytes32,
+    pub urls: Vec<String>,
+    pub value: Option<String>,
+    pub next_retry: Option<u64>,
+    pub retries_so_far: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

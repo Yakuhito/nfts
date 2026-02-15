@@ -411,7 +411,7 @@ async fn fetch_tracked_puzzle_hashes(
 async fn fetch_unspent_coins(pool: &SqlitePool) -> Result<Vec<DbCoin>, CliError> {
     let rows = sqlx::query(
         r#"
-        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata
         FROM coins
         WHERE spent_height IS NULL
         ORDER BY created_height, coin_id

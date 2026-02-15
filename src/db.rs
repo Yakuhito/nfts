@@ -1,7 +1,7 @@
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 
 use crate::error::CliError;
-use crate::models::{Coin as DbCoin, CoinType, TrackedPuzzleHash};
+use crate::models::{Coin as DbCoin, CoinType, Metadata, OffchainMetadata, TrackedPuzzleHash};
 use crate::utils::{bytes32_from_db, optional_bytes32_from_db};
 use chia_wallet_sdk::prelude::{Bytes32, CoinRecord};
 
@@ -27,7 +27,22 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
             puzzle_hash BLOB NOT NULL,
             coin_id BLOB PRIMARY KEY NOT NULL,
             created_height INTEGER NOT NULL,
-            spent_height INTEGER NULL
+            spent_height INTEGER NULL,
+            metadata JSON NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS offchain_metadata (
+            metadata_hash BLOB PRIMARY KEY NOT NULL,
+            urls JSON NOT NULL,
+            value TEXT NULL,
+            next_retry TIMESTAMP NULL,
+            retries_so_far INTEGER NOT NULL
         )
         "#,
     )
@@ -80,6 +95,7 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
     let coin_type_raw = row.get::<String, _>("type");
     let coin_type = CoinType::from_db_str(&coin_type_raw)
         .ok_or_else(|| CliError::Message(format!("invalid coin type in db: {coin_type_raw}")))?;
+    let metadata = parse_coin_metadata(row.get::<Option<String>, _>("metadata"))?;
 
     Ok(DbCoin {
         coin_type,
@@ -99,7 +115,18 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
         coin_id: bytes32_from_db("coin coin_id", row.get::<&[u8], _>("coin_id"))?,
         created_height,
         spent_height,
+        metadata,
     })
+}
+
+fn parse_coin_metadata(raw_metadata: Option<String>) -> Result<Option<Metadata>, CliError> {
+    raw_metadata
+        .map(|raw| {
+            serde_json::from_str::<Metadata>(&raw).map_err(|err| {
+                CliError::Message(format!("invalid coin metadata JSON in db: {err}"))
+            })
+        })
+        .transpose()
 }
 
 pub fn row_to_tracked_puzzle_hash(row: &SqliteRow) -> Result<TrackedPuzzleHash, CliError> {
@@ -114,6 +141,33 @@ pub fn row_to_tracked_puzzle_hash(row: &SqliteRow) -> Result<TrackedPuzzleHash, 
             row.get::<&[u8], _>("puzzle_hash"),
         )?,
         last_sync_height,
+    })
+}
+
+#[allow(dead_code)]
+pub fn row_to_offchain_metadata(row: &SqliteRow) -> Result<OffchainMetadata, CliError> {
+    let retries_so_far = row
+        .get::<i64, _>("retries_so_far")
+        .try_into()
+        .map_err(|_| CliError::Message("invalid retries_so_far in db".to_string()))?;
+    let urls = serde_json::from_str::<Vec<String>>(&row.get::<String, _>("urls"))
+        .map_err(|err| CliError::Message(format!("invalid offchain metadata urls JSON: {err}")))?;
+    let next_retry = row
+        .get::<Option<i64>, _>("next_retry")
+        .map(|v| {
+            u64::try_from(v).map_err(|_| CliError::Message("invalid next_retry in db".to_string()))
+        })
+        .transpose()?;
+
+    Ok(OffchainMetadata {
+        metadata_hash: bytes32_from_db(
+            "offchain_metadata metadata_hash",
+            row.get::<&[u8], _>("metadata_hash"),
+        )?,
+        urls,
+        value: row.get::<Option<String>, _>("value"),
+        next_retry,
+        retries_so_far,
     })
 }
 
