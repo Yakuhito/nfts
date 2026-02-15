@@ -39,7 +39,7 @@ pub enum MetadataValue {
     Bytes32(Bytes32),
     String(String),
     StringArray(Vec<String>),
-    Pair((Bytes, Bytes)),
+    Pairs(Vec<(Bytes, Bytes)>),
 }
 
 impl MetadataValue {
@@ -55,8 +55,8 @@ impl MetadataValue {
             Ok(Self::String(value))
         } else if let Ok(values) = Vec::<String>::from_clvm(decoder, node.clone()) {
             Ok(Self::StringArray(values))
-        } else if let Ok((first, second)) = <(Bytes, Bytes)>::from_clvm(decoder, node.clone()) {
-            Ok(Self::Pair((first, second)))
+        } else if let Ok(pairs) = Vec::<(Bytes, Bytes)>::from_clvm(decoder, node.clone()) {
+            Ok(Self::Pairs(pairs))
         } else {
             Err(FromClvmError::Custom(
                 "failed to deserialize metadata value".to_string(),
@@ -78,7 +78,7 @@ impl<N, E: ClvmEncoder<Node = N>> ToClvm<E> for MetadataValue {
             Self::StringArray(values) => values.to_clvm(encoder),
             Self::Number(value) => value.to_clvm(encoder),
             Self::Bytes32(value) => value.to_clvm(encoder),
-            Self::Pair((first, second)) => (first, second).to_clvm(encoder),
+            Self::Pairs(pairs) => pairs.to_clvm(encoder),
         }
     }
 }
