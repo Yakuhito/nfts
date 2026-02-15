@@ -1,41 +1,17 @@
 use chia_wallet_sdk::{prelude::Bytes32, utils::Address};
 
-use crate::error::CliError;
-
-pub fn parse_launcher_id(input: &str) -> Result<Bytes32, CliError> {
-    if input.starts_with("did:chia:") {
-        // Accept full DID bech32m string (`did:chia:...`) first.
-        if let Ok(value) = parse_bech32m_payload(input) {
-            return Ok(value);
-        }
-        // Also accept `did:chia:` URI prefix followed by plain launcher id value.
-        if let Some(stripped) = input.strip_prefix("did:chia:") {
-            return parse_launcher_id(stripped);
-        }
-    }
-
-    if input.starts_with("nft") {
-        return parse_bech32m_payload(input);
-    }
-
-    if input.len() == 64 && input.chars().all(|c| c.is_ascii_hexdigit()) {
-        let bytes = decode_hex_32(input).ok_or_else(|| {
-            CliError::Message(format!(
-                "invalid hex launcher id (expected 32 bytes): {input}"
-            ))
-        })?;
-        return Ok(Bytes32::new(bytes));
-    }
-
-    parse_bech32m_payload(input)
-}
+use crate::{error::CliError, models::CoinType};
 
 pub fn is_nft_launcher_id(input: &str) -> bool {
-    input.starts_with("nft")
+    input.starts_with("nft1")
 }
 
 pub fn is_did_launcher_id(input: &str) -> bool {
-    input.starts_with("did:chia:")
+    input.starts_with("did:chia:1")
+}
+
+pub fn is_puzzle_hash_launcher_id(input: &str) -> bool {
+    input.starts_with("xch1")
 }
 
 pub fn classify_prefixed_launcher_id(input: &str) -> Option<TrackedKind> {
@@ -45,6 +21,9 @@ pub fn classify_prefixed_launcher_id(input: &str) -> Option<TrackedKind> {
     if is_did_launcher_id(input) {
         return Some(TrackedKind::Did);
     }
+    if is_puzzle_hash_launcher_id(input) {
+        return Some(TrackedKind::PuzzleHash);
+    }
     None
 }
 
@@ -52,10 +31,17 @@ pub fn classify_prefixed_launcher_id(input: &str) -> Option<TrackedKind> {
 pub enum TrackedKind {
     Nft,
     Did,
+    PuzzleHash,
 }
 
-pub fn parse_bech32m_payload(value: &str) -> Result<Bytes32, CliError> {
-    Ok(Address::decode(value)?.puzzle_hash)
+impl TrackedKind {
+    pub fn to_coin_type(self) -> CoinType {
+        match self {
+            Self::Nft => CoinType::Nft,
+            Self::Did => CoinType::Did,
+            Self::PuzzleHash => CoinType::Intermediary,
+        }
+    }
 }
 
 pub fn encode_nft_launcher_id(launcher_id: &Bytes32) -> Result<String, CliError> {
@@ -86,19 +72,4 @@ pub fn optional_bytes32_from_db(
     value
         .map(|bytes| bytes32_from_db(field_name, bytes))
         .transpose()
-}
-
-fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-
-    let mut out = [0u8; 32];
-    for (idx, slot) in out.iter_mut().enumerate() {
-        let start = idx * 2;
-        let end = start + 2;
-        let part = &hex[start..end];
-        *slot = u8::from_str_radix(part, 16).ok()?;
-    }
-    Some(out)
 }

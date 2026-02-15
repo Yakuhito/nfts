@@ -1,4 +1,5 @@
 use chia_wallet_sdk::{driver::DriverError, utils::Bech32Error};
+use reqwest::Error as RequestError;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
@@ -8,6 +9,7 @@ pub enum CliError {
     Io(std::io::Error),
     Bech32(Bech32Error),
     Driver(DriverError),
+    Request(RequestError),
 }
 
 impl Display for CliError {
@@ -19,6 +21,7 @@ impl Display for CliError {
             Self::Bech32(err) => write!(f, "{err}"),
             // Transparent-like formatting: keep upstream DriverError wording unchanged.
             Self::Driver(err) => write!(f, "{err}"),
+            Self::Request(err) => write!(f, "{err}"),
         }
     }
 }
@@ -46,5 +49,11 @@ impl From<Bech32Error> for CliError {
 impl From<DriverError> for CliError {
     fn from(value: DriverError) -> Self {
         Self::Driver(value)
+    }
+}
+
+impl From<reqwest::Error> for CliError {
+    fn from(value: reqwest::Error) -> Self {
+        Self::Request(value)
     }
 }

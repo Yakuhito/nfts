@@ -1955,6 +1955,7 @@ dependencies = [
  "chia-wallet-sdk",
  "clap",
  "clvmr",
+ "reqwest",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
