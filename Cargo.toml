@@ -1,0 +1,10 @@
+[package]
+name = "nfts"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bech32 = "0.11.1"
+chia-wallet-sdk = "0.33.0"
+clap = "4.5.58"
+sqlx = "0.8.6"
