@@ -23,12 +23,15 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Only list tracked NFTs
+    /// Exclude NFTs that are not part of a collection (i.e. not minted by a tracked DID)
     #[arg(long)]
-    pub nfts_only: bool,
-    /// Only list tracked DIDs
+    pub exclude_non_collection_nfts: bool,
+    /// Exclude tracked DIDs
     #[arg(long)]
-    pub dids_only: bool,
+    pub exclude_dids: bool,
+    /// Exclude tracked puzzle hashes (addresses)
+    #[arg(long)]
+    pub exclude_addresses: bool,
 }
 
 #[derive(Args, Debug)]

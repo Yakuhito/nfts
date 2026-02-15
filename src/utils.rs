@@ -52,6 +52,10 @@ pub fn encode_did_launcher_id(launcher_id: &Bytes32) -> Result<String, CliError>
     Ok(Address::new(*launcher_id, "did:chia:".to_string()).encode()?)
 }
 
+pub fn encode_puzzle_hash_address(puzzle_hash: &Bytes32) -> Result<String, CliError> {
+    Ok(Address::new(*puzzle_hash, "xch".to_string()).encode()?)
+}
+
 pub fn bytes32_from_db(field_name: &str, value: &[u8]) -> Result<Bytes32, CliError> {
     if value.len() != 32 {
         return Err(CliError::Message(format!(
