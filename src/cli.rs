@@ -45,7 +45,7 @@ pub struct AddArgs {
 #[derive(Args, Debug)]
 pub struct SyncArgs {
     /// Size of batch when querying coin records
-    #[arg(long, default_value_t = 500)]
+    #[arg(long, default_value_t = 3200)]
     pub batch_size: usize,
     /// Do not query for new puzzle hash coins before syncing database coins
     #[arg(long)]

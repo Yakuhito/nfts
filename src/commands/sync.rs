@@ -113,19 +113,22 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             .into_iter()
             .filter(|c| !processed_coin_ids.contains(&c.coin_id))
             .collect::<Vec<_>>();
+        let no_unspent_coins = unspent_coins.len();
 
         let mut spent_coin_records: Vec<(CoinRecord, &DbCoin)> = Vec::new();
         println!(
             "Fetching a total of {} unspent coin records...",
-            unspent_coins.len()
+            no_unspent_coins
         );
 
         for (batch_no, coin_data) in unspent_coins.chunks(args.batch_size).enumerate() {
             let coin_ids = coin_data.iter().map(|c| c.coin_id).collect::<Vec<_>>();
-            println!(
-                "Fetching {} coin records for batch #{batch_no}...",
-                coin_ids.len()
-            );
+            if no_unspent_coins > args.batch_size {
+                println!(
+                    "Fetching {} coin records for batch #{batch_no}...",
+                    coin_ids.len()
+                );
+            }
             let Some(coin_records) = client
                 .get_coin_records_by_names(coin_ids.to_vec(), None, None, Some(true))
                 .await?
@@ -160,7 +163,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
             );
         }
         for (i, (coin_record, coin_data)) in spent_coin_records.iter().enumerate() {
-            if i % 100 == 0 && i > 0 {
+            if i % 250 == 0 && i > 0 {
                 println!("Processed {} spent coin records...", i);
             }
 
@@ -310,13 +313,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     continue;
                                 }
 
-                                println!(
-                                    "New NFT launcher id: {}",
-                                    encode_nft_launcher_id(&new_nft.info.launcher_id)?
-                                );
                                 let metadata =
                                     ctx.extract::<ParsedMetadata>(new_nft.info.metadata.ptr())?;
-                                println!("Metadata: {:#?}", metadata);
                                 db::add_coin_to_db(
                                     pool,
                                     CoinType::Nft,
