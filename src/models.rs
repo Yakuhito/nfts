@@ -37,6 +37,8 @@ pub struct ParsedMetadata(pub BTreeMap<String, MetadataValue>);
 pub enum MetadataValue {
     String(String),
     StringArray(Vec<String>),
+    Number(u64),
+    Bytes32(Bytes32),
 }
 
 impl MetadataValue {
@@ -44,7 +46,11 @@ impl MetadataValue {
         decoder: &D,
         node: N,
     ) -> Result<Self, FromClvmError> {
-        if let Ok(value) = String::from_clvm(decoder, node.clone()) {
+        if let Ok(value) = Bytes32::from_clvm(decoder, node.clone()) {
+            return Ok(Self::Bytes32(value));
+        } else if let Ok(value) = u64::from_clvm(decoder, node.clone()) {
+            return Ok(Self::Number(value));
+        } else if let Ok(value) = String::from_clvm(decoder, node.clone()) {
             return Ok(Self::String(value));
         }
 
@@ -64,6 +70,8 @@ impl<N, E: ClvmEncoder<Node = N>> ToClvm<E> for MetadataValue {
         match self {
             Self::String(value) => value.to_clvm(encoder),
             Self::StringArray(values) => values.to_clvm(encoder),
+            Self::Number(value) => value.to_clvm(encoder),
+            Self::Bytes32(value) => value.to_clvm(encoder),
         }
     }
 }
