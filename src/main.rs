@@ -29,6 +29,7 @@ async fn main() -> Result<(), CliError> {
         Command::List(args) => commands::list::run(&pool, args).await?,
         Command::Add(args) => commands::add::run(&pool, args).await?,
         Command::Sync(args) => commands::sync::run(&pool, args).await?,
+        Command::Query(args) => commands::query::run(&pool, args).await?,
     }
 
     Ok(())

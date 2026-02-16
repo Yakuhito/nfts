@@ -21,6 +21,8 @@ pub enum Command {
     Add(AddArgs),
     /// Sync tracked items
     Sync(SyncArgs),
+    /// Show spent and unspent coins for an NFT id
+    Query(QueryArgs),
 }
 
 #[derive(Args, Debug)]
@@ -50,4 +52,10 @@ pub struct SyncArgs {
     /// Do not query for new puzzle hash coins before syncing database coins
     #[arg(long)]
     pub skip_puzzle_hash_sync: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct QueryArgs {
+    /// NFT launcher id (nft1...)
+    pub nft_id: String,
 }
