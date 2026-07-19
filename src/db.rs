@@ -53,9 +53,28 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CliError> {
     .execute(pool)
     .await?;
 
+    // Older databases may lack this column; ADD COLUMN is idempotent enough via probe.
+    let has_inner = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*) FROM pragma_table_info('coins') WHERE name = 'inner_puzzle_hash'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_inner == 0 {
+        sqlx::query(
+            r#"
+            ALTER TABLE coins ADD COLUMN inner_puzzle_hash BLOB NULL
+            "#,
+        )
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn add_coin_to_db(
     pool: &SqlitePool,
     coin_type: CoinType,
@@ -64,6 +83,7 @@ pub async fn add_coin_to_db(
     coin: &Coin,
     created_height: u32,
     metadata: Option<ParsedMetadata>,
+    inner_puzzle_hash: Option<Bytes32>,
 ) -> Result<(), CliError> {
     if let Some(metadata) = metadata.as_ref() {
         upsert_offchain_metadata_from_parsed_metadata(pool, metadata).await?;
@@ -80,8 +100,11 @@ pub async fn add_coin_to_db(
 
     sqlx::query(
         r#"
-        INSERT INTO coins (type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?9)
+        INSERT INTO coins (
+            type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id,
+            created_height, spent_height, metadata, inner_puzzle_hash
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)
         ON CONFLICT(coin_id) DO NOTHING
         "#,
     )
@@ -93,6 +116,7 @@ pub async fn add_coin_to_db(
     .bind(coin.coin_id().to_vec())
     .bind(created_height)
     .bind(metadata_json)
+    .bind(inner_puzzle_hash.map(|id| id.to_vec()))
     .execute(pool)
     .await?;
 
@@ -198,6 +222,10 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
     let metadata = row
         .get::<Option<Json<JsonValue>>, _>("metadata")
         .map(|json| json.0);
+    let inner_puzzle_hash = optional_bytes32_from_db(
+        "coin inner_puzzle_hash",
+        row.get::<Option<&[u8]>, _>("inner_puzzle_hash"),
+    )?;
 
     Ok(DbCoin {
         coin_type,
@@ -218,7 +246,53 @@ pub fn row_to_coin(row: &SqliteRow) -> Result<DbCoin, CliError> {
         created_height,
         spent_height,
         metadata,
+        inner_puzzle_hash,
     })
+}
+
+pub async fn update_offchain_metadata_value(
+    pool: &SqlitePool,
+    metadata_hash: &Bytes32,
+    value: &str,
+) -> Result<(), CliError> {
+    sqlx::query(
+        r#"
+        UPDATE offchain_metadata
+        SET value = ?1, next_retry = NULL
+        WHERE metadata_hash = ?2
+        "#,
+    )
+    .bind(value)
+    .bind(metadata_hash.to_vec())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn update_coin_nft_fields(
+    pool: &SqlitePool,
+    coin_id: &Bytes32,
+    metadata: &ParsedMetadata,
+    inner_puzzle_hash: &Bytes32,
+) -> Result<(), CliError> {
+    upsert_offchain_metadata_from_parsed_metadata(pool, metadata).await?;
+    let metadata_json = Json(serde_json::to_value(metadata).map_err(|err| {
+        CliError::Message(format!("failed to serialize coin metadata as JSON: {err}"))
+    })?);
+
+    sqlx::query(
+        r#"
+        UPDATE coins
+        SET metadata = ?1, inner_puzzle_hash = ?2
+        WHERE coin_id = ?3
+        "#,
+    )
+    .bind(metadata_json)
+    .bind(inner_puzzle_hash.to_vec())
+    .bind(coin_id.to_vec())
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub fn row_to_tracked_puzzle_hash(row: &SqliteRow) -> Result<TrackedPuzzleHash, CliError> {

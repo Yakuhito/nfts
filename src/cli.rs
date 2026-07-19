@@ -23,6 +23,38 @@ pub enum Command {
     Sync(SyncArgs),
     /// Show spent and unspent coins for an NFT id
     Query(QueryArgs),
+    /// Base Premine generate / confirm
+    Premine(PremineArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PremineArgs {
+    #[command(subcommand)]
+    pub command: PremineCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PremineCommand {
+    /// Generate the deterministic Base Premine from the local snapshot
+    Generate(PremineGenerateArgs),
+    /// Independently confirm a Base Premine CSV against MintGarden
+    Confirm(PremineConfirmArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PremineGenerateArgs {
+    /// Base Premine CSV output path
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Warnings CSV output path
+    #[arg(long)]
+    pub warnings: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct PremineConfirmArgs {
+    /// Base Premine CSV to validate (never modified)
+    pub input: PathBuf,
 }
 
 #[derive(Args, Debug)]

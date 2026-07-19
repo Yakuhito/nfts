@@ -49,7 +49,7 @@ pub async fn run(pool: &SqlitePool, args: ListArgs) -> Result<(), CliError> {
 async fn fetch_dids(pool: &SqlitePool) -> Result<Vec<Coin>, CliError> {
     let rows = sqlx::query(
         r#"
-        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata, inner_puzzle_hash
         FROM coins
         WHERE type = 'DID'
           AND launcher_id IS NOT NULL
@@ -68,7 +68,7 @@ async fn fetch_dids(pool: &SqlitePool) -> Result<Vec<Coin>, CliError> {
 async fn fetch_nfts(pool: &SqlitePool) -> Result<Vec<Coin>, CliError> {
     let rows = sqlx::query(
         r#"
-        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata, inner_puzzle_hash
         FROM coins
         WHERE type = 'NFT'
           AND launcher_id IS NOT NULL

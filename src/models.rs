@@ -24,6 +24,8 @@ pub struct Coin {
     pub created_height: u32,
     pub spent_height: Option<u32>,
     pub metadata: Option<JsonValue>,
+    /// NFT p2 / inner puzzle hash when known (Premine Recipient source).
+    pub inner_puzzle_hash: Option<Bytes32>,
 }
 
 #[allow(dead_code)]

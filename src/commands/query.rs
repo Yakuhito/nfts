@@ -45,7 +45,7 @@ pub async fn run(pool: &SqlitePool, args: QueryArgs) -> Result<(), CliError> {
 async fn fetch_nft_coins(pool: &SqlitePool, launcher_id: Vec<u8>) -> Result<Vec<Coin>, CliError> {
     let rows = sqlx::query(
         r#"
-        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata, inner_puzzle_hash
         FROM coins
         WHERE type = 'NFT'
           AND launcher_id = ?1

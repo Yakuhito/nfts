@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod models;
+mod premine;
 mod utils;
 
 use clap::Parser;
@@ -30,6 +31,7 @@ async fn main() -> Result<(), CliError> {
         Command::Add(args) => commands::add::run(&pool, args).await?,
         Command::Sync(args) => commands::sync::run(&pool, args).await?,
         Command::Query(args) => commands::query::run(&pool, args).await?,
+        Command::Premine(args) => commands::premine::run(&pool, args).await?,
     }
 
     Ok(())

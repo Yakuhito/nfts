@@ -87,6 +87,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                 &coin_record.coin,
                 coin_record.confirmed_block_index,
                 None,
+                None,
             )
             .await?;
         }
@@ -250,6 +251,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                         &new_nft.coin,
                         coin_record.spent_block_index,
                         Some(metadata),
+                        Some(new_nft.info.p2_puzzle_hash),
                     )
                     .await?;
                     db::update_coin_spent_height(
@@ -277,6 +279,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     &new_coin,
                                     coin_record.spent_block_index,
                                     None,
+                                    None,
                                 )
                                 .await?;
 
@@ -298,6 +301,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 coin_data.launcher_id, // DID launcher id is the DID's launcher id property :)
                                 &new_coin,
                                 coin_record.spent_block_index,
+                                None,
                                 None,
                             )
                             .await?;
@@ -382,6 +386,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                     &current_nft.coin,
                                     coin_record.spent_block_index,
                                     Some(metadata),
+                                    Some(current_nft.info.p2_puzzle_hash),
                                 )
                                 .await?;
                                 println!(
@@ -427,6 +432,7 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                                 &new_coin,
                                 coin_record.spent_block_index,
                                 None,
+                                None,
                             )
                             .await?;
                         }
@@ -466,7 +472,7 @@ async fn fetch_tracked_puzzle_hashes(
 async fn fetch_unspent_coins(pool: &SqlitePool) -> Result<Vec<DbCoin>, CliError> {
     let rows = sqlx::query(
         r#"
-        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height, spent_height, metadata, inner_puzzle_hash
         FROM coins
         WHERE spent_height IS NULL
         ORDER BY created_height, coin_id
