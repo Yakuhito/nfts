@@ -186,20 +186,33 @@ fn validate_actual_rows(rows: &[PremineRow], errors: &mut Vec<String>) {
                 row.handle, row.allocation_type
             ));
         }
-        if !is_http_url(&row.allocation_explanation) {
+        if !is_mintgarden_nft_url(&row.allocation_explanation) {
             errors.push(format!(
-                "invalid allocation_explanation for {}: {:?}",
+                "invalid allocation_explanation for {}: {:?}; expected https://mintgarden.io/nfts/{{nft_id}}",
                 row.handle, row.allocation_explanation
             ));
         }
     }
 }
 
-fn is_http_url(value: &str) -> bool {
+fn is_mintgarden_nft_url(value: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
     };
-    url.scheme() == "http" || url.scheme() == "https"
+    if url.scheme() != "https" {
+        return false;
+    }
+    if url.host_str() != Some("mintgarden.io") {
+        return false;
+    }
+    let mut segments = match url.path_segments() {
+        Some(segments) => segments,
+        None => return false,
+    };
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some("nfts"), Some(nft_id), None) if nft_id.starts_with("nft1") && !nft_id.is_empty()
+    )
 }
 
 #[derive(Debug, Deserialize)]
