@@ -357,7 +357,7 @@ async fn fetch_offchain_row(
     row.map(|r| db::row_to_offchain_metadata(&r)).transpose()
 }
 
-async fn load_onchain_metadata_refs(
+pub(crate) async fn load_onchain_metadata_refs(
     pool: &SqlitePool,
     launcher_id: &Bytes32,
 ) -> Result<Option<(Bytes32, Vec<String>)>, CliError> {

@@ -39,6 +39,8 @@ pub enum PremineCommand {
     Generate(PremineGenerateArgs),
     /// Independently confirm a Base Premine CSV against MintGarden
     Confirm(PremineConfirmArgs),
+    /// Fill missing off-chain metadata via MintGarden's original-metadata endpoint
+    MintgardenHydrate(PremineMintgardenHydrateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -55,6 +57,16 @@ pub struct PremineGenerateArgs {
 pub struct PremineConfirmArgs {
     /// Base Premine CSV to validate (never modified)
     pub input: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct PremineMintgardenHydrateArgs {
+    /// Optional path to a file of nft1... ids (one per line). Default: every launcher still missing cached metadata.
+    #[arg(long)]
+    pub nfts_file: Option<PathBuf>,
+    /// Max concurrent MintGarden metadata fetches
+    #[arg(long, default_value_t = 8)]
+    pub concurrency: usize,
 }
 
 #[derive(Args, Debug)]

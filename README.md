@@ -66,6 +66,16 @@ Behavior:
 - Writes both CSVs atomically (a fatal failure does not replace prior good outputs)
 - Before the Migration Cutoff (`2026-07-20 09:00:00 UTC`), prints a prominent warning and continues against the latest available chain tip for **rehearsal only** — do not publish those outputs
 
+If `premine generate` fails because off-chain metadata URLs are unreachable (for example timed-out Pawket/`storage.pawket.app` hosts), try MintGarden’s original-metadata endpoint first:
+
+```bash
+cargo run -- --db nfts.db premine mintgarden-hydrate
+# optional: limit to a file of nft1... ids, one per line
+cargo run -- --db nfts.db premine mintgarden-hydrate --nfts-file missing-nfts.txt
+```
+
+`mintgarden-hydrate` fetches `GET https://api.mintgarden.io/nfts/{nft_id}/metadata`, SHA-256-verifies the bytes against the on-chain metadata hash, and only then caches the JSON. It also tries the on-chain metadata URLs and public IPFS gateways as fallbacks, still requiring a hash match. It never accepts MintGarden’s parsed `metadata_json` without matching original bytes.
+
 ## Confirm independently (MintGarden)
 
 ```bash
@@ -102,4 +112,9 @@ Only after `premine confirm` succeeds against the Migration Cutoff should the Ba
 ```bash
 cargo run -- --db nfts.db list
 cargo run -- --db nfts.db query <nft1...>
+cargo run -- --db nfts.db premine mintgarden-hydrate
 ```
+
+## Note on MintGarden collection counts
+
+The MintGarden collection pages / `GET /collections/{id}/nfts/ids` lists can under-count relative to a full local sync of the CNS creator address and NamesDAO DID. Individual MintGarden NFT pages may still show the correct collection for NFTs missing from those list endpoints. Local sync follows on-chain mint lineage and is the generate source of truth; confirm’s MintGarden reconstruction can therefore see a subset until MintGarden’s collection index is complete.
