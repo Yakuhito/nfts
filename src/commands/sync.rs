@@ -172,9 +172,11 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                 .await?
                 .coin_solution
             else {
-                return Err(CliError::Message(
-                    "failed to get puzzle and solution for coin record".to_string(),
-                ));
+                println!(
+                    "Skipping coin 0x{}: puzzle/solution unavailable (will retry later)",
+                    hex::encode(coin_record.coin.coin_id())
+                );
+                continue;
             };
 
             let ctx = &mut SpendContext::new();
