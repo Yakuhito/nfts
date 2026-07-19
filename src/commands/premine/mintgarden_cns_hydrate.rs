@@ -1,4 +1,4 @@
-//! Fill missing off-chain metadata using MintGarden's original-metadata bytes.
+//! Fill missing CNS off-chain metadata via MintGarden + Pawket wire-format reconstruct.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -7,23 +7,22 @@ use std::time::Duration;
 use chia_wallet_sdk::prelude::Bytes32;
 use sqlx::SqlitePool;
 
-use crate::cli::PremineMintgardenHydrateArgs;
+use crate::cli::PremineMintgardenCnsHydrateArgs;
 use crate::commands::premine::generate::load_onchain_metadata_refs;
 use crate::db;
 use crate::error::CliError;
-use crate::premine::{NAMESDAO_DID_LAUNCHER_HEX, Source, accept_metadata_bytes};
+use crate::premine::{accept_metadata_bytes, accept_pawket_reconstructed};
 use crate::utils::encode_nft_launcher_id;
 
 const MINTGARDEN_API: &str = "https://api.mintgarden.io";
 
-pub async fn run(pool: &SqlitePool, args: PremineMintgardenHydrateArgs) -> Result<(), CliError> {
+pub async fn run(pool: &SqlitePool, args: PremineMintgardenCnsHydrateArgs) -> Result<(), CliError> {
     let http = reqwest::Client::builder()
-        .user_agent("nfts-premine-mintgarden-hydrate/0.1")
+        .user_agent("nfts-premine-mintgarden-cns-hydrate/0.1")
         .timeout(Duration::from_secs(25))
         .build()?;
 
-    let namesdao_did = bytes32_from_hex(NAMESDAO_DID_LAUNCHER_HEX)?;
-    let mut targets = load_missing_targets(pool, &namesdao_did).await?;
+    let mut targets = load_missing_cns_targets(pool).await?;
 
     if let Some(path) = &args.nfts_file {
         let filter = read_nft_id_filter(path)?;
@@ -31,12 +30,12 @@ pub async fn run(pool: &SqlitePool, args: PremineMintgardenHydrateArgs) -> Resul
     }
 
     if targets.is_empty() {
-        println!("No NFT metadata rows need MintGarden hydration.");
+        println!("No CNS NFT metadata rows need MintGarden CNS hydration.");
         return Ok(());
     }
 
     println!(
-        "Hydrating {} NFT(s) from MintGarden /nfts/{{id}}/metadata (concurrency {})...",
+        "CNS-hydrating {} NFT(s) via Pawket CRLF reconstruct (hash-asserted), then /metadata, then URLs (concurrency {})...",
         targets.len(),
         args.concurrency
     );
@@ -64,18 +63,10 @@ pub async fn run(pool: &SqlitePool, args: PremineMintgardenHydrateArgs) -> Resul
                 Ok(text) => {
                     db::update_offchain_metadata_value(pool, &target.metadata_hash, &text).await?;
                     ok += 1;
-                    println!(
-                        "  OK {} ({})",
-                        target.nft_id,
-                        target.source.as_str()
-                    );
+                    println!("  OK {}", target.nft_id);
                 }
                 Err(reason) => {
-                    println!(
-                        "  FAIL {} ({}) — {reason}",
-                        target.nft_id,
-                        target.source.as_str()
-                    );
+                    println!("  FAIL {} — {reason}", target.nft_id);
                     failures.push((target.nft_id, reason));
                 }
             }
@@ -83,14 +74,14 @@ pub async fn run(pool: &SqlitePool, args: PremineMintgardenHydrateArgs) -> Resul
     }
 
     println!(
-        "MintGarden hydrate complete: ok={ok} failed={}",
+        "MintGarden CNS hydrate complete: ok={ok} failed={}",
         failures.len()
     );
     if failures.is_empty() {
         Ok(())
     } else {
         Err(CliError::Message(format!(
-            "mintgarden-hydrate failed for {} NFT(s)",
+            "mintgarden-cns-hydrate failed for {} NFT(s)",
             failures.len()
         )))
     }
@@ -98,22 +89,20 @@ pub async fn run(pool: &SqlitePool, args: PremineMintgardenHydrateArgs) -> Resul
 
 #[derive(Debug, Clone)]
 struct HydrateTarget {
-    source: Source,
     nft_id: String,
     metadata_hash: Bytes32,
     urls: Vec<String>,
 }
 
-async fn load_missing_targets(
-    pool: &SqlitePool,
-    namesdao_did: &Bytes32,
-) -> Result<Vec<HydrateTarget>, CliError> {
+async fn load_missing_cns_targets(pool: &SqlitePool) -> Result<Vec<HydrateTarget>, CliError> {
+    // CNS mints in this snapshot are address-tracked (no DID on the NFT coin).
     let rows = sqlx::query(
         r#"
-        SELECT DISTINCT launcher_id, did_launcher_id
+        SELECT DISTINCT launcher_id
         FROM coins
         WHERE type = 'NFT'
           AND launcher_id IS NOT NULL
+          AND did_launcher_id IS NULL
         "#,
     )
     .fetch_all(pool)
@@ -126,18 +115,8 @@ async fn load_missing_targets(
         use sqlx::Row;
         let launcher_id =
             crate::utils::bytes32_from_db("launcher_id", row.get::<&[u8], _>("launcher_id"))?;
-        let did = crate::utils::optional_bytes32_from_db(
-            "did_launcher_id",
-            row.get::<Option<&[u8]>, _>("did_launcher_id"),
-        )?;
-        let source = match did {
-            Some(d) if d == *namesdao_did => Source::NamesDao,
-            Some(_) => continue,
-            None => Source::Cns,
-        };
 
-        let Some((metadata_hash, urls)) =
-            load_onchain_metadata_refs(pool, &launcher_id).await?
+        let Some((metadata_hash, urls)) = load_onchain_metadata_refs(pool, &launcher_id).await?
         else {
             continue;
         };
@@ -168,7 +147,6 @@ async fn load_missing_targets(
         }
 
         out.push(HydrateTarget {
-            source,
             nft_id: encode_nft_launcher_id(&launcher_id)?,
             metadata_hash,
             urls,
@@ -205,24 +183,33 @@ async fn fetch_and_verify(
     let mut expected = [0u8; 32];
     expected.copy_from_slice(target.metadata_hash.as_ref());
 
-    // 1) MintGarden original-metadata endpoint (preferred).
-    let mg_url = format!("{MINTGARDEN_API}/nfts/{}/metadata", target.nft_id);
-    match http.get(&mg_url).send().await {
+    // 1) Pawket/CNS wire format from MintGarden parsed metadata_json (indent-2 CRLF).
+    //    Accepted only when SHA-256 matches on-chain `mh`.
+    let detail_url = format!("{MINTGARDEN_API}/nfts/{}", target.nft_id);
+    match http.get(&detail_url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            if let Ok(bytes) = resp.bytes().await
-                && let Some(text) = accept_metadata_bytes(&expected, &bytes)
+            if let Ok(detail) = resp.json::<serde_json::Value>().await
+                && let Some(metadata_json) = detail.pointer("/data/metadata_json")
+                && let Some(text) = accept_pawket_reconstructed(&expected, metadata_json)
             {
                 return Ok(text);
             }
+            // Fall through: parsed JSON present but reconstruct did not hash-match.
         }
-        Ok(resp) => {
-            // fall through to URL/gateway attempts after noting status
-            let _ = resp.status();
-        }
-        Err(_) => {}
+        _ => {}
     }
 
-    // 2) On-chain metadata URLs, plus public IPFS gateways for any /ipfs/{cid} path.
+    // 2) MintGarden original-metadata endpoint.
+    let mg_url = format!("{MINTGARDEN_API}/nfts/{}/metadata", target.nft_id);
+    if let Ok(resp) = http.get(&mg_url).send().await
+        && resp.status().is_success()
+        && let Ok(bytes) = resp.bytes().await
+        && let Some(text) = accept_metadata_bytes(&expected, &bytes)
+    {
+        return Ok(text);
+    }
+
+    // 3) On-chain metadata URLs + public IPFS gateways.
     let mut candidates = target.urls.clone();
     for url in &target.urls {
         if let Some(cid) = ipfs_cid(url) {
@@ -237,7 +224,7 @@ async fn fetch_and_verify(
         }
     }
 
-    let mut last_err = "no candidate URL succeeded".to_string();
+    let mut last_err = "no candidate URL succeeded with matching metadata hash".to_string();
     for url in candidates {
         match http.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => match resp.bytes().await {
@@ -261,11 +248,7 @@ fn ipfs_cid(url: &str) -> Option<&str> {
     let idx = url.find("/ipfs/")?;
     let rest = &url[idx + "/ipfs/".len()..];
     let cid = rest.split(['?', '#', '/']).next()?;
-    if cid.is_empty() {
-        None
-    } else {
-        Some(cid)
-    }
+    if cid.is_empty() { None } else { Some(cid) }
 }
 
 fn read_nft_id_filter(path: &PathBuf) -> Result<HashSet<String>, CliError> {
@@ -285,19 +268,4 @@ fn read_nft_id_filter(path: &PathBuf) -> Result<HashSet<String>, CliError> {
         out.insert(id.to_string());
     }
     Ok(out)
-}
-
-fn bytes32_from_hex(hex_str: &str) -> Result<Bytes32, CliError> {
-    let normalized = hex_str.trim().trim_start_matches("0x");
-    let bytes =
-        hex::decode(normalized).map_err(|err| CliError::Message(format!("invalid hex: {err}")))?;
-    if bytes.len() != 32 {
-        return Err(CliError::Message(format!(
-            "expected 32 bytes, got {}",
-            bytes.len()
-        )));
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(Bytes32::new(arr))
 }

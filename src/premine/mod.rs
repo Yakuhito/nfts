@@ -11,5 +11,5 @@ pub use constants::*;
 pub use csv::{PremineRow, WarningRow, write_premine_csvs_atomic};
 pub use expiration::{parse_cns_expiration, parse_namesdao_expiry_height};
 pub use handle::{classify_legacy_name, strip_xch_suffix};
-pub use metadata_verify::accept_metadata_bytes;
+pub use metadata_verify::{accept_metadata_bytes, accept_pawket_reconstructed};
 pub use selection::{LegacyCandidate, Source, assert_unique_handles, build_base_premine};

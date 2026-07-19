@@ -26,6 +26,7 @@ pub async fn run(args: PremineConfirmArgs) -> Result<(), CliError> {
 
     let http = reqwest::Client::builder()
         .user_agent("nfts-premine-confirm/0.1")
+        .timeout(std::time::Duration::from_secs(60))
         .build()?;
 
     // Probe latest event timestamp to decide pre-cutoff rehearsal mode.
@@ -253,18 +254,12 @@ async fn fetch_all_collection_nfts(
     let mut page: Option<String> = None;
     loop {
         let mut url = format!(
-            "{MINTGARDEN_API}/collections/{collection_id}/nfts?include_metadata=true&include_uris=true&size=100"
+            "{MINTGARDEN_API}/collections/{collection_id}/nfts?include_metadata=true&size=50"
         );
         if let Some(p) = &page {
             url.push_str(&format!("&page={}", urlencoding_minimal(p)));
         }
-        let resp: Page<MgNft> = http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let resp: Page<MgNft> = get_json_with_retries(http, &url).await?;
         out.extend(resp.items);
         match resp.next {
             Some(next) if !next.is_empty() => page = Some(next),
@@ -288,13 +283,7 @@ async fn fetch_all_events(
         if let Some(p) = &page {
             url.push_str(&format!("&page={}", urlencoding_minimal(p)));
         }
-        let resp: Page<MgEvent> = http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let resp: Page<MgEvent> = get_json_with_retries(http, &url).await?;
         out.extend(resp.items);
         match resp.next {
             Some(next) if !next.is_empty() => page = Some(next),
@@ -302,6 +291,45 @@ async fn fetch_all_events(
         }
     }
     Ok(out)
+}
+
+async fn get_json_with_retries<T: for<'de> Deserialize<'de>>(
+    http: &reqwest::Client,
+    url: &str,
+) -> Result<T, CliError> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match http.get(url).send().await {
+            Ok(resp) => {
+                if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt <= 10 {
+                    let secs = 45u64;
+                    eprintln!("  MintGarden 429 on fetch; sleeping {secs}s (attempt {attempt}/10)...");
+                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                    continue;
+                }
+                if resp.status().is_server_error() && attempt <= 10 {
+                    let secs = 30u64;
+                    eprintln!(
+                        "  MintGarden {} on fetch; sleeping {secs}s (attempt {attempt}/10)...",
+                        resp.status()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                    continue;
+                }
+                let resp = resp.error_for_status()?;
+                // Pace pagination so we don't trip MintGarden rate limits mid-confirm.
+                tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                return Ok(resp.json().await?);
+            }
+            Err(err) if attempt <= 10 => {
+                let secs = 30u64;
+                eprintln!("  MintGarden request error ({err}); sleeping {secs}s (attempt {attempt}/10)...");
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            }
+            Err(err) => return Err(CliError::Request(err)),
+        }
+    }
 }
 
 async fn latest_known_event_unix(http: &reqwest::Client) -> Result<u64, CliError> {

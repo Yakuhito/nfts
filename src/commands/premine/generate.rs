@@ -556,7 +556,7 @@ async fn registration_time(
     let launcher_hash: Bytes32 = SINGLETON_LAUNCHER_HASH.into();
     let rows = sqlx::query(
         r#"
-        SELECT created_height, spent_height, puzzle_hash, coin_id
+        SELECT created_height, spent_height, puzzle_hash, coin_id, parent_coin_id
         FROM coins
         WHERE type = 'NFT'
           AND launcher_id = ?1
@@ -567,20 +567,35 @@ async fn registration_time(
     .await?;
 
     let mut spend_height = None;
+    let mut mint_from_parent = None;
     for row in rows {
         use sqlx::Row;
         let puzzle_hash =
             crate::utils::bytes32_from_db("puzzle_hash", row.get::<&[u8], _>("puzzle_hash"))?;
         let coin_id = crate::utils::bytes32_from_db("coin_id", row.get::<&[u8], _>("coin_id"))?;
+        let parent_coin_id =
+            crate::utils::bytes32_from_db("parent_coin_id", row.get::<&[u8], _>("parent_coin_id"))?;
         if puzzle_hash == launcher_hash || coin_id == *launcher_id {
             if let Some(spent) = row.get::<Option<i64>, _>("spent_height") {
                 spend_height = u32::try_from(spent).ok();
             }
             break;
         }
+        if parent_coin_id == *launcher_id {
+            let created = row.get::<i64, _>("created_height");
+            if let Ok(h) = u32::try_from(created) {
+                mint_from_parent = Some(match mint_from_parent {
+                    Some(prev) if prev < h => prev,
+                    _ => h,
+                });
+            }
+        }
     }
 
-    let height = spend_height.ok_or_else(|| {
+    // CNS address sync stores the launcher coin; NamesDAO DID sync often only stores
+    // NFT children. The first child whose parent is the launcher was created in the
+    // same block the launcher was spent.
+    let height = spend_height.or(mint_from_parent).ok_or_else(|| {
         CliError::Message(format!(
             "missing launcher spend height for 0x{}",
             hex::encode(launcher_id)

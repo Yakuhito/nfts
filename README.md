@@ -66,15 +66,15 @@ Behavior:
 - Writes both CSVs atomically (a fatal failure does not replace prior good outputs)
 - Before the Migration Cutoff (`2026-07-20 09:00:00 UTC`), prints a prominent warning and continues against the latest available chain tip for **rehearsal only** — do not publish those outputs
 
-If `premine generate` fails because off-chain metadata URLs are unreachable (for example timed-out Pawket/`storage.pawket.app` hosts), try MintGarden’s original-metadata endpoint first:
+If `premine generate` fails because off-chain CNS metadata URLs are unreachable (for example timed-out Pawket/`storage.pawket.app` hosts), recover hash-verified bytes with:
 
 ```bash
-cargo run -- --db nfts.db premine mintgarden-hydrate
+cargo run -- --db nfts.db premine mintgarden-cns-hydrate
 # optional: limit to a file of nft1... ids, one per line
-cargo run -- --db nfts.db premine mintgarden-hydrate --nfts-file missing-nfts.txt
+cargo run -- --db nfts.db premine mintgarden-cns-hydrate --nfts-file missing-nfts.txt
 ```
 
-`mintgarden-hydrate` fetches `GET https://api.mintgarden.io/nfts/{nft_id}/metadata`, SHA-256-verifies the bytes against the on-chain metadata hash, and only then caches the JSON. It also tries the on-chain metadata URLs and public IPFS gateways as fallbacks, still requiring a hash match. It never accepts MintGarden’s parsed `metadata_json` without matching original bytes.
+`mintgarden-cns-hydrate` is CNS-only. It rebuilds Pawket’s wire format from MintGarden’s parsed `metadata_json` (indent-2 JSON with CRLF and Pawket’s fixed key order) and **only** caches the result when SHA-256 matches the on-chain metadata hash. Fallbacks: `GET /nfts/{id}/metadata`, then on-chain metadata URLs / public IPFS gateways (still hash-asserted).
 
 ## Confirm independently (MintGarden)
 
@@ -112,7 +112,7 @@ Only after `premine confirm` succeeds against the Migration Cutoff should the Ba
 ```bash
 cargo run -- --db nfts.db list
 cargo run -- --db nfts.db query <nft1...>
-cargo run -- --db nfts.db premine mintgarden-hydrate
+cargo run -- --db nfts.db premine mintgarden-cns-hydrate
 ```
 
 ## Note on MintGarden collection counts
