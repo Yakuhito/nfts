@@ -1,6 +1,6 @@
 # nfts
 
-NFT S(napshotter) — track Chia NFT / DID / address state in a local SQLite snapshot, and generate / independently confirm the XCHandles **Base Premine**.
+NFT S(napshotter) - track Chia NFT / DID / address state in a local SQLite snapshot, and generate / independently confirm the XCHandles **Base Premine**.
 
 ## What this produces
 
