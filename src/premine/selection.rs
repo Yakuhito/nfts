@@ -151,6 +151,7 @@ pub fn assert_unique_handles(rows: &[PremineRow]) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[allow(clippy::too_many_arguments)]
     fn cand(
         source: Source,
         nft_id: &str,

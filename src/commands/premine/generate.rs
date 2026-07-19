@@ -638,7 +638,7 @@ async fn repair_missing_nft_fields(
         let needs_meta = coins.iter().all(|c| c.metadata.is_none());
         let cutoff_coin = coins.iter().rev().find(|coin| {
             coin.created_height <= cutoff_height
-                && !coin.spent_height.is_some_and(|h| h <= cutoff_height)
+                && coin.spent_height.is_none_or(|h| h > cutoff_height)
         });
         let Some(cutoff_coin) = cutoff_coin else {
             continue;
@@ -651,12 +651,11 @@ async fn repair_missing_nft_fields(
         if seen_coins.insert(cutoff_coin.coin_id) {
             work.push((*cutoff_coin).clone());
         }
-        if needs_meta {
-            if let Some(fallback) = coins.iter().find(|c| c.coin_id != cutoff_coin.coin_id) {
-                if seen_coins.insert(fallback.coin_id) {
-                    work.push((*fallback).clone());
-                }
-            }
+        if needs_meta
+            && let Some(fallback) = coins.iter().find(|c| c.coin_id != cutoff_coin.coin_id)
+            && seen_coins.insert(fallback.coin_id)
+        {
+            work.push((*fallback).clone());
         }
     }
 

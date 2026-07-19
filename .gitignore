@@ -31,3 +31,6 @@ target
 # Local DB copies / rehearsal backups
 *.db.*
 *.bak
+
+# Local rehearsal / process notes
+.scratch/
