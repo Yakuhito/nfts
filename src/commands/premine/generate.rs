@@ -203,13 +203,21 @@ async fn hydrate_all_metadata(
     http: &reqwest::Client,
     launchers: &[LauncherRef],
 ) -> Result<Vec<HydrationFailure>, CliError> {
-    let mut failures = Vec::new();
-    for (i, launcher) in launchers.iter().enumerate() {
-        if i > 0 && i % 250 == 0 {
-            println!("  hydrated {i}/{}...", launchers.len());
-        }
-        let Some((metadata_hash, urls)) = load_onchain_metadata_refs(pool, &launcher.launcher_id).await? else {
-            failures.push(HydrationFailure {
+    #[derive(Clone)]
+    struct Need {
+        source: Source,
+        nft_id: String,
+        metadata_hash: Bytes32,
+        urls: Vec<String>,
+    }
+
+    let mut needs = Vec::new();
+    let mut missing_onchain = Vec::new();
+    for launcher in launchers {
+        let Some((metadata_hash, urls)) =
+            load_onchain_metadata_refs(pool, &launcher.launcher_id).await?
+        else {
+            missing_onchain.push(HydrationFailure {
                 source: launcher.source,
                 nft_id: launcher.nft_id.clone(),
                 urls: vec!["<no on-chain metadata hash/urls in database>".into()],
@@ -225,47 +233,82 @@ async fn hydrate_all_metadata(
         let urls = if let Some(existing) = offchain {
             merge_urls(existing.urls, urls)
         } else {
-            // Ensure a row exists for caching
             ensure_offchain_row(pool, &metadata_hash, &urls).await?;
             urls
         };
 
-        let mut hydrated = false;
-        for url in &urls {
-            match http.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    let bytes = match resp.bytes().await {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                    let digest = Sha256::digest(&bytes);
-                    if digest.as_slice() != metadata_hash.as_ref() {
-                        continue;
+        needs.push(Need {
+            source: launcher.source,
+            nft_id: launcher.nft_id.clone(),
+            metadata_hash,
+            urls,
+        });
+    }
+
+    println!(
+        "  {} metadata blob(s) need download; fetching with concurrency 32...",
+        needs.len()
+    );
+
+    let mut failures = missing_onchain;
+    for (chunk_idx, chunk) in needs.chunks(32).enumerate() {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for need in chunk {
+            let http = http.clone();
+            let need = need.clone();
+            handles.push(tokio::spawn(async move {
+                let mut hydrated_text = None;
+                for url in &need.urls {
+                    match http.get(url).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            let Ok(bytes) = resp.bytes().await else {
+                                continue;
+                            };
+                            let digest = Sha256::digest(&bytes);
+                            if digest.as_slice() != need.metadata_hash.as_ref() {
+                                continue;
+                            }
+                            let Ok(text) = std::str::from_utf8(&bytes) else {
+                                continue;
+                            };
+                            if serde_json::from_str::<JsonValue>(text).is_err() {
+                                continue;
+                            }
+                            hydrated_text = Some(text.to_string());
+                            break;
+                        }
+                        _ => continue,
                     }
-                    // Validate JSON
-                    let text = match std::str::from_utf8(&bytes) {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    if serde_json::from_str::<JsonValue>(text).is_err() {
-                        continue;
-                    }
-                    db::update_offchain_metadata_value(pool, &metadata_hash, text).await?;
-                    hydrated = true;
-                    break;
                 }
-                _ => continue,
+                (need, hydrated_text)
+            }));
+        }
+
+        for handle in handles {
+            let (need, hydrated_text) = handle
+                .await
+                .map_err(|err| CliError::Message(format!("hydrate task join error: {err}")))?;
+            match hydrated_text {
+                Some(text) => {
+                    db::update_offchain_metadata_value(pool, &need.metadata_hash, &text).await?;
+                }
+                None => failures.push(HydrationFailure {
+                    source: need.source,
+                    nft_id: need.nft_id,
+                    urls: need.urls,
+                }),
             }
         }
 
-        if !hydrated {
-            failures.push(HydrationFailure {
-                source: launcher.source,
-                nft_id: launcher.nft_id.clone(),
-                urls,
-            });
+        if chunk_idx > 0 && chunk_idx % 10 == 0 {
+            println!(
+                "  hydrate progress: ~{}/{}...",
+                (chunk_idx + 1) * 32,
+                needs.len()
+            );
         }
     }
+
     Ok(failures)
 }
 
@@ -565,57 +608,113 @@ async fn repair_missing_nft_fields(
     launchers: &[LauncherRef],
     cutoff_height: u32,
 ) -> Result<(), CliError> {
-    let mut repaired = 0usize;
-    for (i, launcher) in launchers.iter().enumerate() {
-        if i > 0 && i % 100 == 0 {
-            println!("  repaired scan {i}/{} (updated {repaired})...", launchers.len());
+    let launcher_hash: Bytes32 = SINGLETON_LAUNCHER_HASH.into();
+
+    // Bulk-load non-launcher NFT coins once, then pick cutoff/fallback per launcher.
+    let rows = sqlx::query(
+        r#"
+        SELECT type, launcher_id, did_launcher_id, parent_coin_id, puzzle_hash, coin_id,
+               created_height, spent_height, metadata, inner_puzzle_hash
+        FROM coins
+        WHERE type = 'NFT'
+          AND launcher_id IS NOT NULL
+        ORDER BY created_height, coin_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let all_coins: Vec<Coin> = rows.iter().map(db::row_to_coin).collect::<Result<_, _>>()?;
+
+    let mut by_launcher: HashMap<Bytes32, Vec<&Coin>> = HashMap::new();
+    for coin in &all_coins {
+        let Some(launcher_id) = coin.launcher_id else {
+            continue;
+        };
+        if coin.puzzle_hash == launcher_hash {
+            continue;
         }
+        by_launcher.entry(launcher_id).or_default().push(coin);
+    }
 
-        let needs_meta = load_onchain_metadata_refs(pool, &launcher.launcher_id)
-            .await?
-            .is_none();
-
-        let cutoff_coin = match coin_at_cutoff(pool, &launcher.launcher_id, cutoff_height).await? {
-            Some(c) => c,
-            None => continue,
+    let mut work: Vec<Coin> = Vec::new();
+    let mut seen_coins = HashSet::new();
+    for launcher in launchers {
+        let Some(coins) = by_launcher.get(&launcher.launcher_id) else {
+            continue;
+        };
+        let needs_meta = coins.iter().all(|c| c.metadata.is_none());
+        let cutoff_coin = coins.iter().rev().find(|coin| {
+            coin.created_height <= cutoff_height
+                && !coin.spent_height.is_some_and(|h| h <= cutoff_height)
+        });
+        let Some(cutoff_coin) = cutoff_coin else {
+            continue;
         };
         let needs_inner = cutoff_coin.inner_puzzle_hash.is_none();
-
         if !needs_meta && !needs_inner {
             continue;
         }
 
-        // Prefer repairing the cutoff coin; if metadata is still missing, try any lineage coin.
-        let mut targets = vec![cutoff_coin.clone()];
+        if seen_coins.insert(cutoff_coin.coin_id) {
+            work.push((*cutoff_coin).clone());
+        }
         if needs_meta {
-            let lineage = load_nft_coins(pool, &launcher.launcher_id).await?;
-            for coin in lineage {
-                if coin.coin_id != cutoff_coin.coin_id {
-                    targets.push(coin);
+            if let Some(fallback) = coins
+                .iter()
+                .find(|c| c.coin_id != cutoff_coin.coin_id)
+            {
+                if seen_coins.insert(fallback.coin_id) {
+                    work.push((*fallback).clone());
                 }
+            }
+        }
+    }
+
+    println!(
+        "  {} coin(s) need parent-spend repair; recovering with concurrency 8...",
+        work.len()
+    );
+
+    let mut repaired = 0usize;
+    for (chunk_idx, chunk) in work.chunks(8).enumerate() {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for coin in chunk {
+            let client = client.clone();
+            let coin = coin.clone();
+            handles.push(tokio::spawn(async move {
+                let mut last_err = None;
+                for attempt in 0..3 {
+                    match recover_nft_fields_from_parent(&client, &coin).await {
+                        Ok(fields) => return Ok((coin.coin_id, fields)),
+                        Err(err) => {
+                            last_err = Some(err);
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                200 * (attempt + 1) as u64,
+                            ))
+                            .await;
+                        }
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| CliError::Message("repair failed".into())))
+            }));
+        }
+
+        for handle in handles {
+            if let Ok(Ok((coin_id, (metadata, inner)))) = handle.await {
+                db::update_coin_nft_fields(pool, &coin_id, &metadata, &inner).await?;
+                repaired += 1;
             }
         }
 
-        let mut got_meta = !needs_meta;
-        let mut got_inner = !needs_inner;
-        for coin in targets {
-            match recover_nft_fields_from_parent(client, &coin).await {
-                Ok((metadata, inner)) => {
-                    db::update_coin_nft_fields(pool, &coin.coin_id, &metadata, &inner).await?;
-                    repaired += 1;
-                    got_meta = true;
-                    if coin.coin_id == cutoff_coin.coin_id {
-                        got_inner = true;
-                    }
-                    if got_meta && got_inner {
-                        break;
-                    }
-                }
-                Err(_) => continue,
-            }
+        if (chunk_idx + 1) % 20 == 0 || (chunk_idx + 1) * 8 >= work.len() {
+            println!(
+                "  repair progress: {}/{} coins attempted, {repaired} updated...",
+                ((chunk_idx + 1) * 8).min(work.len()),
+                work.len()
+            );
         }
-        let _ = (got_meta, got_inner);
     }
+
     println!("  repair pass updated {repaired} coin row(s)");
     Ok(())
 }
@@ -762,20 +861,33 @@ async fn recipient_at_cutoff(
 }
 
 async fn block_timestamp(client: &CoinsetClient, height: u32) -> Result<u64, CliError> {
-    let Some(block) = client
-        .get_block_record_by_height(height)
-        .await?
-        .block_record
-    else {
-        return Err(CliError::Message(format!(
-            "missing block record for height {height}"
-        )));
-    };
-    block.timestamp.ok_or_else(|| {
-        CliError::Message(format!(
-            "block {height} has no timestamp (not a transaction block?)"
-        ))
-    })
+    // Non-transaction blocks have no timestamp; walk backward to the nearest tx block.
+    let mut h = height;
+    loop {
+        let Some(block) = client
+            .get_block_record_by_height(h)
+            .await?
+            .block_record
+        else {
+            return Err(CliError::Message(format!(
+                "missing block record for height {h}"
+            )));
+        };
+        if let Some(ts) = block.timestamp {
+            return Ok(ts);
+        }
+        let prev = block.prev_transaction_block_height;
+        if prev < h {
+            h = prev;
+            continue;
+        }
+        if h == 0 {
+            return Err(CliError::Message(format!(
+                "no transaction-block timestamp at or before height {height}"
+            )));
+        }
+        h -= 1;
+    }
 }
 
 async fn find_height_at_or_before(

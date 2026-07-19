@@ -28,3 +28,6 @@ target
 # yak added
 *.db
 *.db-journal
+# Local DB copies / rehearsal backups
+*.db.*
+*.bak

@@ -209,10 +209,8 @@ pub async fn run(pool: &SqlitePool, args: SyncArgs) -> Result<(), CliError> {
                             .await?
                             .coin_solution
                         else {
-                            return Err(CliError::Message(format!(
-                                "failed to get puzzle and solution for new coin 0x{}",
-                                hex::encode(new_coin.coin_id())
-                            )));
+                            // Transient RPC gaps happen; retry on a later sync loop.
+                            continue;
                         };
 
                         let new_puzzle = ctx.alloc(&new_coin_spend.puzzle_reveal)?;
