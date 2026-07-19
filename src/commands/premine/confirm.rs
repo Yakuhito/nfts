@@ -10,9 +10,8 @@ use crate::premine::csv::parse_premine_csv;
 use crate::premine::handle::is_valid_handle;
 use crate::premine::{
     LegacyCandidate, MIGRATION_CUTOFF_UNIX, MINTGARDEN_CNS_COLLECTION,
-    MINTGARDEN_NAMESDAO_COLLECTION, PremineRow, Source, assert_unique_handles,
-    build_base_premine, classify_legacy_name, parse_cns_expiration, parse_namesdao_expiry_height,
-    strip_xch_suffix,
+    MINTGARDEN_NAMESDAO_COLLECTION, PremineRow, Source, assert_unique_handles, build_base_premine,
+    classify_legacy_name, parse_cns_expiration, parse_namesdao_expiry_height, strip_xch_suffix,
 };
 use crate::utils::encode_puzzle_hash_address;
 use chia_wallet_sdk::prelude::Bytes32;
@@ -94,19 +93,28 @@ pub async fn run(args: PremineConfirmArgs) -> Result<(), CliError> {
     for (handle, actual_row) in &actual_map {
         match expected_map.get(handle) {
             None => errors.push(format!(
-                "unsupported row: handle={handle} recipient={} expiration={}",
-                actual_row.recipient, actual_row.expiration
+                "unsupported row: handle={handle} recipient={} expiration={} allocation_type={} allocation_explanation={}",
+                actual_row.recipient,
+                actual_row.expiration,
+                actual_row.allocation_type,
+                actual_row.allocation_explanation
             )),
             Some(expected_row) => {
                 if actual_row.recipient != expected_row.recipient
                     || actual_row.expiration != expected_row.expiration
+                    || actual_row.allocation_type != expected_row.allocation_type
+                    || actual_row.allocation_explanation != expected_row.allocation_explanation
                 {
                     errors.push(format!(
-                        "incorrect row for {handle}: actual recipient={} expiration={}; expected recipient={} expiration={}",
+                        "incorrect row for {handle}: actual recipient={} expiration={} allocation_type={} allocation_explanation={}; expected recipient={} expiration={} allocation_type={} allocation_explanation={}",
                         actual_row.recipient,
                         actual_row.expiration,
+                        actual_row.allocation_type,
+                        actual_row.allocation_explanation,
                         expected_row.recipient,
-                        expected_row.expiration
+                        expected_row.expiration,
+                        expected_row.allocation_type,
+                        expected_row.allocation_explanation
                     ));
                 }
             }
@@ -116,8 +124,11 @@ pub async fn run(args: PremineConfirmArgs) -> Result<(), CliError> {
     for (handle, expected_row) in &expected_map {
         if !actual_map.contains_key(handle) {
             errors.push(format!(
-                "missing expected row: handle={handle} recipient={} expiration={}",
-                expected_row.recipient, expected_row.expiration
+                "missing expected row: handle={handle} recipient={} expiration={} allocation_type={} allocation_explanation={}",
+                expected_row.recipient,
+                expected_row.expiration,
+                expected_row.allocation_type,
+                expected_row.allocation_explanation
             ));
         }
     }
@@ -167,7 +178,28 @@ fn validate_actual_rows(rows: &[PremineRow], errors: &mut Vec<String>) {
                 row.handle
             ));
         }
+        if row.allocation_type != Source::Cns.as_str()
+            && row.allocation_type != Source::NamesDao.as_str()
+        {
+            errors.push(format!(
+                "invalid allocation_type for {}: {:?}; expected cns or namesdao",
+                row.handle, row.allocation_type
+            ));
+        }
+        if !is_http_url(&row.allocation_explanation) {
+            errors.push(format!(
+                "invalid allocation_explanation for {}: {:?}",
+                row.handle, row.allocation_explanation
+            ));
+        }
     }
+}
+
+fn is_http_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "http" || url.scheme() == "https"
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,7 +295,13 @@ async fn latest_known_event_unix(http: &reqwest::Client) -> Result<u64, CliError
     let url = format!(
         "{MINTGARDEN_API}/events?collection={MINTGARDEN_CNS_COLLECTION}&type=0&type=1&type=2&type=3&size=1"
     );
-    let resp: Page<MgEvent> = http.get(url).send().await?.error_for_status()?.json().await?;
+    let resp: Page<MgEvent> = http
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     let Some(ev) = resp.items.first() else {
         return Ok(0);
     };
@@ -295,7 +333,9 @@ fn collect_recipients_at_cutoff(
         if recipient.is_empty() {
             continue;
         }
-        let entry = best.entry(ev.nft_id.clone()).or_insert((0, -1, String::new()));
+        let entry = best
+            .entry(ev.nft_id.clone())
+            .or_insert((0, -1, String::new()));
         if ts > entry.0 || (ts == entry.0 && ev.event_index > entry.1) {
             *entry = (ts, ev.event_index, recipient);
         }
@@ -356,9 +396,7 @@ fn mintgarden_to_candidate(
                     v.as_u64()
                         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
                 });
-            height
-                .map(parse_namesdao_expiry_height)
-                .unwrap_or(0)
+            height.map(parse_namesdao_expiry_height).unwrap_or(0)
         }
     };
 

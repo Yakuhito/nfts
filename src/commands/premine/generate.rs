@@ -31,20 +31,21 @@ pub async fn run(pool: &SqlitePool, args: PremineGenerateArgs) -> Result<(), Cli
     let peak_height = status.peak.height;
     let tip_unix = block_timestamp(&client, peak_height).await?;
 
-    let (effective_cutoff_unix, effective_cutoff_height, pre_cutoff) =
-        if tip_unix < MIGRATION_CUTOFF_UNIX {
-            eprintln!(
-                "WARNING: chain tip ({tip_unix}) precedes Migration Cutoff ({MIGRATION_CUTOFF_UNIX} / 2026-07-20 09:00:00 UTC)."
-            );
-            eprintln!(
-                "WARNING: continuing against the latest available state for rehearsal only. Do NOT publish these outputs as the live Base Premine."
-            );
-            (tip_unix, peak_height, true)
-        } else {
-            let cutoff_height =
-                find_height_at_or_before(&client, peak_height, MIGRATION_CUTOFF_UNIX).await?;
-            (MIGRATION_CUTOFF_UNIX, cutoff_height, false)
-        };
+    let (effective_cutoff_unix, effective_cutoff_height, pre_cutoff) = if tip_unix
+        < MIGRATION_CUTOFF_UNIX
+    {
+        eprintln!(
+            "WARNING: chain tip ({tip_unix}) precedes Migration Cutoff ({MIGRATION_CUTOFF_UNIX} / 2026-07-20 09:00:00 UTC)."
+        );
+        eprintln!(
+            "WARNING: continuing against the latest available state for rehearsal only. Do NOT publish these outputs as the live Base Premine."
+        );
+        (tip_unix, peak_height, true)
+    } else {
+        let cutoff_height =
+            find_height_at_or_before(&client, peak_height, MIGRATION_CUTOFF_UNIX).await?;
+        (MIGRATION_CUTOFF_UNIX, cutoff_height, false)
+    };
 
     println!(
         "Effective cutoff: unix={effective_cutoff_unix} height={effective_cutoff_height} pre_cutoff_rehearsal={pre_cutoff}"
@@ -70,8 +71,7 @@ pub async fn run(pool: &SqlitePool, args: PremineGenerateArgs) -> Result<(), Cli
     let http = reqwest::Client::builder()
         .user_agent("nfts-premine/0.1")
         .build()?;
-    let hydration_failures =
-        hydrate_all_metadata(pool, &http, &launchers).await?;
+    let hydration_failures = hydrate_all_metadata(pool, &http, &launchers).await?;
     if !hydration_failures.is_empty() {
         eprintln!(
             "FATAL: {} NFT(s) still missing required off-chain metadata after exhausting URLs:",
@@ -175,10 +175,8 @@ async fn load_launcher_ids(
     let mut out = Vec::new();
     for row in rows {
         use sqlx::Row;
-        let launcher_id = crate::utils::bytes32_from_db(
-            "launcher_id",
-            row.get::<&[u8], _>("launcher_id"),
-        )?;
+        let launcher_id =
+            crate::utils::bytes32_from_db("launcher_id", row.get::<&[u8], _>("launcher_id"))?;
         let did = crate::utils::optional_bytes32_from_db(
             "did_launcher_id",
             row.get::<Option<&[u8]>, _>("did_launcher_id"),
@@ -401,9 +399,7 @@ fn extract_mh_mu(metadata: &ParsedMetadata) -> Result<Option<(Bytes32, Vec<Strin
         MetadataValue::Bytes32(h) => *h,
         MetadataValue::String(raw) => bytes32_from_hex(raw.trim_start_matches("0x"))?,
         _ => {
-            return Err(CliError::Message(
-                "invalid mh in on-chain metadata".into(),
-            ));
+            return Err(CliError::Message("invalid mh in on-chain metadata".into()));
         }
     };
     let urls = match mu {
@@ -423,15 +419,16 @@ async fn build_candidate(
     timestamp_cache: &mut HashMap<u32, u64>,
     warnings: &mut Vec<WarningRow>,
 ) -> Result<Option<LegacyCandidate>, CliError> {
-    let (metadata_hash, urls) = match load_onchain_metadata_refs(pool, &launcher.launcher_id).await? {
-        Some(v) => v,
-        None => {
-            return Err(CliError::Message(format!(
-                "missing on-chain metadata for {}",
-                launcher.nft_id
-            )));
-        }
-    };
+    let (metadata_hash, urls) =
+        match load_onchain_metadata_refs(pool, &launcher.launcher_id).await? {
+            Some(v) => v,
+            None => {
+                return Err(CliError::Message(format!(
+                    "missing on-chain metadata for {}",
+                    launcher.nft_id
+                )));
+            }
+        };
     let offchain = fetch_offchain_row(pool, &metadata_hash)
         .await?
         .and_then(|o| o.value)
@@ -484,8 +481,7 @@ async fn build_candidate(
 
     let registration_time =
         registration_time(pool, client, &launcher.launcher_id, timestamp_cache).await?;
-    let recipient_ph =
-        recipient_at_cutoff(pool, &launcher.launcher_id, cutoff_height).await?;
+    let recipient_ph = recipient_at_cutoff(pool, &launcher.launcher_id, cutoff_height).await?;
     let recipient = encode_puzzle_hash_address(&recipient_ph)?;
 
     // Activity is relative to the effective cutoff; keep legacy_expiration as metadata-derived.
@@ -503,10 +499,7 @@ async fn build_candidate(
     }))
 }
 
-fn extract_legacy_expiration(
-    meta: &JsonValue,
-    source: Source,
-) -> Result<(u64, bool), CliError> {
+fn extract_legacy_expiration(meta: &JsonValue, source: Source) -> Result<(u64, bool), CliError> {
     let attrs = meta
         .get("attributes")
         .and_then(|v| v.as_array())
@@ -659,10 +652,7 @@ async fn repair_missing_nft_fields(
             work.push((*cutoff_coin).clone());
         }
         if needs_meta {
-            if let Some(fallback) = coins
-                .iter()
-                .find(|c| c.coin_id != cutoff_coin.coin_id)
-            {
+            if let Some(fallback) = coins.iter().find(|c| c.coin_id != cutoff_coin.coin_id) {
                 if seen_coins.insert(fallback.coin_id) {
                     work.push((*fallback).clone());
                 }
@@ -762,7 +752,9 @@ async fn recover_nft_fields_from_parent(
             .await?
             .coin_record
         else {
-            return Err(CliError::Message("missing coin record during repair".into()));
+            return Err(CliError::Message(
+                "missing coin record during repair".into(),
+            ));
         };
         if !record.spent {
             return Err(CliError::Message(
@@ -864,11 +856,7 @@ async fn block_timestamp(client: &CoinsetClient, height: u32) -> Result<u64, Cli
     // Non-transaction blocks have no timestamp; walk backward to the nearest tx block.
     let mut h = height;
     loop {
-        let Some(block) = client
-            .get_block_record_by_height(h)
-            .await?
-            .block_record
-        else {
+        let Some(block) = client.get_block_record_by_height(h).await?.block_record else {
             return Err(CliError::Message(format!(
                 "missing block record for height {h}"
             )));
@@ -948,8 +936,8 @@ async fn find_height_at_or_before(
 
 fn bytes32_from_hex(hex_str: &str) -> Result<Bytes32, CliError> {
     let normalized = hex_str.trim().trim_start_matches("0x");
-    let bytes = hex::decode(normalized)
-        .map_err(|err| CliError::Message(format!("invalid hex: {err}")))?;
+    let bytes =
+        hex::decode(normalized).map_err(|err| CliError::Message(format!("invalid hex: {err}")))?;
     if bytes.len() != 32 {
         return Err(CliError::Message(format!(
             "expected 32 bytes, got {}",

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::premine::csv::PremineRow;
+use crate::premine::csv::{PremineRow, mintgarden_nft_url};
 use crate::premine::expiration::base_premine_expiration;
 use crate::premine::handle::CandidateKind;
 
@@ -131,6 +131,8 @@ pub fn build_base_premine(candidates: &[LegacyCandidate], cutoff_unix: u64) -> V
             handle: c.handle,
             recipient: c.recipient,
             expiration: base_premine_expiration(c.legacy_expiration),
+            allocation_type: c.source.as_str().to_string(),
+            allocation_explanation: mintgarden_nft_url(&c.nft_id),
         })
         .collect()
 }
@@ -376,6 +378,32 @@ mod tests {
         let rows = build_base_premine(&[cns, ndao], CUTOFF);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].recipient, "xch1cns");
+        assert_eq!(rows[0].allocation_type, "cns");
+        assert_eq!(
+            rows[0].allocation_explanation,
+            "https://mintgarden.io/nfts/nft1cns"
+        );
+    }
+
+    #[test]
+    fn namesdao_row_records_namesdao_allocation_provenance() {
+        let ndao = cand(
+            Source::NamesDao,
+            "nft1ndao",
+            "bob",
+            "bob",
+            CandidateKind::Exact,
+            50,
+            2_000,
+            "xch1ndao",
+        );
+        let rows = build_base_premine(&[ndao], CUTOFF);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].allocation_type, "namesdao");
+        assert_eq!(
+            rows[0].allocation_explanation,
+            "https://mintgarden.io/nfts/nft1ndao"
+        );
     }
 
     #[test]

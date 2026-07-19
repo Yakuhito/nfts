@@ -7,6 +7,10 @@ pub struct PremineRow {
     pub handle: String,
     pub recipient: String,
     pub expiration: u64,
+    /// `cns` or `namesdao` for Base Premine rows.
+    pub allocation_type: String,
+    /// MintGarden NFT page used for the allocation.
+    pub allocation_explanation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,13 +58,18 @@ fn temp_path(path: &Path) -> Result<PathBuf, CliError> {
 }
 
 fn write_premine_file(path: &Path, rows: &[PremineRow]) -> Result<(), CliError> {
-    let mut out = String::from("handle,recipient,expiration\n");
+    let mut out =
+        String::from("handle,recipient,expiration,allocation_type,allocation_explanation\n");
     for row in rows {
         out.push_str(&escape_csv(&row.handle));
         out.push(',');
         out.push_str(&escape_csv(&row.recipient));
         out.push(',');
         out.push_str(&row.expiration.to_string());
+        out.push(',');
+        out.push_str(&escape_csv(&row.allocation_type));
+        out.push(',');
+        out.push_str(&escape_csv(&row.allocation_explanation));
         out.push('\n');
     }
     std::fs::write(path, out)?;
@@ -99,9 +108,11 @@ pub fn parse_premine_csv(contents: &str) -> Result<Vec<PremineRow>, CliError> {
         .next()
         .ok_or_else(|| CliError::Message("premine CSV is empty".to_string()))?
         .trim();
-    if header != "handle,recipient,expiration" {
+    const EXPECTED_HEADER: &str =
+        "handle,recipient,expiration,allocation_type,allocation_explanation";
+    if header != EXPECTED_HEADER {
         return Err(CliError::Message(format!(
-            "unexpected premine CSV header: {header:?}; expected handle,recipient,expiration"
+            "unexpected premine CSV header: {header:?}; expected {EXPECTED_HEADER}"
         )));
     }
 
@@ -112,9 +123,9 @@ pub fn parse_premine_csv(contents: &str) -> Result<Vec<PremineRow>, CliError> {
             continue;
         }
         let parts = split_csv_line(line)?;
-        if parts.len() != 3 {
+        if parts.len() != 5 {
             return Err(CliError::Message(format!(
-                "premine CSV line {}: expected 3 columns, got {}",
+                "premine CSV line {}: expected 5 columns, got {}",
                 idx + 2,
                 parts.len()
             )));
@@ -130,6 +141,8 @@ pub fn parse_premine_csv(contents: &str) -> Result<Vec<PremineRow>, CliError> {
             handle: parts[0].clone(),
             recipient: parts[1].clone(),
             expiration,
+            allocation_type: parts[3].clone(),
+            allocation_explanation: parts[4].clone(),
         });
     }
     Ok(rows)
@@ -164,4 +177,45 @@ fn split_csv_line(line: &str) -> Result<Vec<String>, CliError> {
     }
     fields.push(current);
     Ok(fields)
+}
+
+/// MintGarden NFT page for a Base Premine allocation explanation.
+pub fn mintgarden_nft_url(nft_id: &str) -> String {
+    format!("https://mintgarden.io/nfts/{nft_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_allocation_provenance_columns() {
+        let rows = vec![PremineRow {
+            handle: "alice".into(),
+            recipient: "xch1alice".into(),
+            expiration: 1_797_757_200,
+            allocation_type: "cns".into(),
+            allocation_explanation: mintgarden_nft_url("nft1alice"),
+        }];
+        let dir = std::env::temp_dir().join(format!("nfts-premine-csv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("base-premine.csv");
+        let warnings = dir.join("warnings.csv");
+        write_premine_csvs_atomic(&output, &warnings, &rows, &[]).unwrap();
+        let contents = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            contents.starts_with(
+                "handle,recipient,expiration,allocation_type,allocation_explanation\n"
+            )
+        );
+        let parsed = parse_premine_csv(&contents).unwrap();
+        assert_eq!(parsed, rows);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_legacy_three_column_header() {
+        let err = parse_premine_csv("handle,recipient,expiration\n").unwrap_err();
+        assert!(err.to_string().contains("allocation_type"));
+    }
 }
