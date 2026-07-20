@@ -25,7 +25,14 @@ pub fn is_valid_handle(handle: &str) -> bool {
 
 /// Classify a legacy metadata name after `.xch` normalization via [`strip_xch_suffix`].
 /// Returns `(handle, kind)` when the string is an Exact or Stripped Handle Candidate.
+///
+/// Names that begin with one or more `_` are ineligible (NamesDAO reserved / alias forms
+/// such as `_lucas` / `__lucas` must not strip into a public handle).
 pub fn classify_legacy_name(name_after_xch_removal: &str) -> Option<(String, CandidateKind)> {
+    if name_after_xch_removal.starts_with('_') {
+        return None;
+    }
+
     if is_valid_handle(name_after_xch_removal) {
         // Exact candidates must not contain `-` or `_` — already true if valid handle.
         return Some((name_after_xch_removal.to_string(), CandidateKind::Exact));
@@ -80,6 +87,14 @@ mod tests {
             classify_legacy_name("foo_bar"),
             Some(("foobar".into(), CandidateKind::Stripped))
         );
+    }
+
+    #[test]
+    fn rejects_leading_underscores() {
+        assert_eq!(classify_legacy_name("_lucas"), None);
+        assert_eq!(classify_legacy_name("__lucas"), None);
+        assert_eq!(classify_legacy_name("___adrianscott"), None);
+        assert_eq!(classify_legacy_name("_scott"), None);
     }
 
     #[test]

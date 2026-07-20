@@ -3,15 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Contribution Premine Expiration: 2027-08-20 09:00:00 UTC
+# Contribution Premine Expiration: 2027-08-20 09:00:00 UTC (launch + 1 year)
 EXTENSION_FLOOR=1818752400
+# Base premine expiration cap: launch + 1 year + 6 months + 122 days
+# = 2028-06-21 09:00:00 UTC
+BASE_EXPIRATION_CAP=1845190800
 
 {
   cat contributor-premine.csv
   echo
   # Skip header; base rows follow contributor rows.
-  # Cap base-premine expirations at EXTENSION_FLOOR (keep if lower).
-  awk -F',' -v OFS=',' -v cap="$EXTENSION_FLOOR" '
+  # Cap base-premine expirations at BASE_EXPIRATION_CAP (keep if lower).
+  awk -F',' -v OFS=',' -v cap="$BASE_EXPIRATION_CAP" '
     NR == 1 { next }
     {
       gsub(/\r/, "", $3)

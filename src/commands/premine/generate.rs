@@ -464,6 +464,15 @@ async fn build_candidate(
 
     let original_name = strip_xch_suffix(raw_name);
     let Some((handle, kind)) = classify_legacy_name(&original_name) else {
+        if original_name.starts_with('_') {
+            warnings.push(WarningRow {
+                reason: "leading-underscore".into(),
+                source: launcher.source.as_str().into(),
+                nft_id: launcher.nft_id.clone(),
+                original_name: original_name.clone(),
+                metadata_urls: urls_joined,
+            });
+        }
         return Ok(None);
     };
 
