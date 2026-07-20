@@ -10,7 +10,15 @@ EXTENSION_FLOOR=1818752400
   cat contributor-premine.csv
   echo
   # Skip header; base rows follow contributor rows.
-  tail -n +2 base-premine.csv
+  # Cap base-premine expirations at EXTENSION_FLOOR (keep if lower).
+  awk -F',' -v OFS=',' -v cap="$EXTENSION_FLOOR" '
+    NR == 1 { next }
+    {
+      gsub(/\r/, "", $3)
+      if ($3 + 0 > cap + 0) $3 = cap
+      print
+    }
+  ' base-premine.csv
 } > premine.csv.tmp
 
 # Apply contributor extensions: for each listed handle, set expiration to
