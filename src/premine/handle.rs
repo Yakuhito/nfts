@@ -6,8 +6,13 @@ pub enum CandidateKind {
     Stripped = 1,
 }
 
+/// If `name` contains `.xch`, keep only the substring before the first `.xch`
+/// (NamesDAO CHIP-0007 names look like `scott.xch 8722634`). Otherwise return `name` unchanged.
 pub fn strip_xch_suffix(name: &str) -> String {
-    name.replace(".xch", "")
+    match name.split_once(".xch") {
+        Some((before, _)) => before.to_string(),
+        None => name.to_string(),
+    }
 }
 
 pub fn is_valid_handle(handle: &str) -> bool {
@@ -18,7 +23,7 @@ pub fn is_valid_handle(handle: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-/// Classify a legacy metadata name after `.xch` removal.
+/// Classify a legacy metadata name after `.xch` normalization via [`strip_xch_suffix`].
 /// Returns `(handle, kind)` when the string is an Exact or Stripped Handle Candidate.
 pub fn classify_legacy_name(name_after_xch_removal: &str) -> Option<(String, CandidateKind)> {
     if is_valid_handle(name_after_xch_removal) {
@@ -48,10 +53,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strips_every_literal_xch() {
+    fn strips_at_first_xch() {
         assert_eq!(strip_xch_suffix("foo.xch"), "foo");
         assert_eq!(strip_xch_suffix("foo.xch.xch"), "foo");
-        assert_eq!(strip_xch_suffix("a.xchb"), "ab");
+        assert_eq!(strip_xch_suffix("scott.xch 8722634"), "scott");
+        assert_eq!(strip_xch_suffix("_scott.xch 4508310"), "_scott");
+        assert_eq!(strip_xch_suffix("a.xchb"), "a");
+        assert_eq!(strip_xch_suffix("___adrianscott"), "___adrianscott");
     }
 
     #[test]
