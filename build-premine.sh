@@ -14,12 +14,13 @@ EXTENSION_FLOOR=1818752400
 } > premine.csv.tmp
 
 # Apply contributor extensions: for each listed handle, set expiration to
-# max(current expiration, EXTENSION_FLOOR).
+# max(current expiration, EXTENSION_FLOOR) and replace allocation_explanation.
 awk -F',' -v OFS=',' -v floor="$EXTENSION_FLOOR" '
   NR == FNR {
     if (FNR == 1) next
     gsub(/\r/, "", $1)
-    if ($1 != "") ext[$1] = 1
+    gsub(/\r/, "", $2)
+    if ($1 != "") ext[$1] = $2
     next
   }
   FNR == 1 { print; next }
@@ -27,6 +28,7 @@ awk -F',' -v OFS=',' -v floor="$EXTENSION_FLOOR" '
     gsub(/\r/, "", $1)
     if ($1 in ext) {
       if ($3 + 0 < floor + 0) $3 = floor
+      $5 = ext[$1]
       delete ext[$1]
     }
     print
