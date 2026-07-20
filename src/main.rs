@@ -18,9 +18,11 @@ async fn main() -> Result<(), CliError> {
 
     let db_options = SqliteConnectOptions::new()
         .filename(&cli.db)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+    // Allow concurrent readers during premine generate (candidate build uses concurrency 8).
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(16)
         .connect_with(db_options)
         .await?;
 

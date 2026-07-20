@@ -91,26 +91,102 @@ pub async fn run(pool: &SqlitePool, args: PremineGenerateArgs) -> Result<(), Cli
         )));
     }
 
-    println!("Building Legacy Registration candidates...");
-    let mut timestamp_cache: HashMap<u32, u64> = HashMap::new();
+    println!("Resolving mint coin ids for registration timestamps...");
+    let mint_by_launcher = resolve_mint_coin_ids(pool, &launchers).await?;
+    let mut mint_coin_ids: Vec<Bytes32> = mint_by_launcher.values().copied().collect();
+    mint_coin_ids.sort();
+    mint_coin_ids.dedup();
+
+    println!(
+        "Fetching {} mint coin records (batch 100, concurrency 8)...",
+        mint_coin_ids.len()
+    );
+    let timestamps_by_coin = fetch_coin_timestamps_batched(&client, &mint_coin_ids).await?;
+
+    let mut registration_by_launcher: HashMap<Bytes32, u64> = HashMap::new();
+    let mut missing_timestamp = 0usize;
+    for (launcher_id, coin_id) in &mint_by_launcher {
+        match timestamps_by_coin.get(coin_id).copied() {
+            Some(ts) if ts > 0 => {
+                registration_by_launcher.insert(*launcher_id, ts);
+            }
+            _ => {
+                missing_timestamp += 1;
+            }
+        }
+    }
+    if missing_timestamp > 0 {
+        return Err(CliError::Message(format!(
+            "missing coin-record timestamps for {missing_timestamp} mint coin(s); refusing to generate"
+        )));
+    }
+    println!(
+        "Resolved registration timestamps for {} launchers",
+        registration_by_launcher.len()
+    );
+
+    println!("Building Legacy Registration candidates (concurrency 8)...");
+    let registration_by_launcher = std::sync::Arc::new(registration_by_launcher);
     let mut candidates = Vec::new();
     let mut warnings = Vec::new();
 
-    for launcher in &launchers {
-        let Some(built) = build_candidate(
-            pool,
-            &client,
-            launcher,
-            effective_cutoff_height,
-            effective_cutoff_unix,
-            &mut timestamp_cache,
-            &mut warnings,
-        )
-        .await?
-        else {
-            continue;
-        };
-        candidates.push(built);
+    for (chunk_idx, chunk) in launchers.chunks(8).enumerate() {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for launcher in chunk {
+            let pool = pool.clone();
+            let launcher = launcher.clone();
+            let registration_by_launcher = registration_by_launcher.clone();
+            let cutoff_height = effective_cutoff_height;
+            let cutoff_unix = effective_cutoff_unix;
+            handles.push(tokio::spawn(async move {
+                let Some(&registration_time) =
+                    registration_by_launcher.get(&launcher.launcher_id)
+                else {
+                    return Err(CliError::Message(format!(
+                        "missing registration timestamp for {}",
+                        launcher.nft_id
+                    )));
+                };
+                let mut local_warnings = Vec::new();
+                let built = build_candidate(
+                    &pool,
+                    &launcher,
+                    cutoff_height,
+                    cutoff_unix,
+                    registration_time,
+                    &mut local_warnings,
+                )
+                .await?;
+                Ok::<_, CliError>((built, local_warnings))
+            }));
+        }
+
+        for handle in handles {
+            match handle.await {
+                Ok(Ok((built, mut local_warnings))) => {
+                    warnings.append(&mut local_warnings);
+                    if let Some(candidate) = built {
+                        candidates.push(candidate);
+                    }
+                }
+                Ok(Err(err)) => return Err(err),
+                Err(err) => {
+                    return Err(CliError::Message(format!(
+                        "candidate task join failed: {err}"
+                    )));
+                }
+            }
+        }
+
+        if (chunk_idx + 1) % 50 == 0 || (chunk_idx + 1) * 8 >= launchers.len() {
+            println!(
+                "  candidate progress: {}/{} launchers, {} candidates, {} warnings...",
+                ((chunk_idx + 1) * 8).min(launchers.len()),
+                launchers.len(),
+                candidates.len(),
+                warnings.len()
+            );
+        }
     }
 
     println!(
@@ -412,11 +488,10 @@ fn extract_mh_mu(metadata: &ParsedMetadata) -> Result<Option<(Bytes32, Vec<Strin
 
 async fn build_candidate(
     pool: &SqlitePool,
-    client: &CoinsetClient,
     launcher: &LauncherRef,
     cutoff_height: u32,
     cutoff_unix: u64,
-    timestamp_cache: &mut HashMap<u32, u64>,
+    registration_time: u64,
     warnings: &mut Vec<WarningRow>,
 ) -> Result<Option<LegacyCandidate>, CliError> {
     let (metadata_hash, urls) =
@@ -488,8 +563,6 @@ async fn build_candidate(
         });
     }
 
-    let registration_time =
-        registration_time(pool, client, &launcher.launcher_id, timestamp_cache).await?;
     let recipient_ph = recipient_at_cutoff(pool, &launcher.launcher_id, cutoff_height).await?;
     let recipient = encode_puzzle_hash_address(&recipient_ph)?;
 
@@ -556,67 +629,152 @@ fn extract_legacy_expiration(meta: &JsonValue, source: Source) -> Result<(u64, b
     }
 }
 
-async fn registration_time(
+/// Map each launcher to its eve NFT coin id (parent = launcher). The eve coin's
+/// confirmation timestamp is Registration Time.
+async fn resolve_mint_coin_ids(
     pool: &SqlitePool,
-    client: &CoinsetClient,
-    launcher_id: &Bytes32,
-    cache: &mut HashMap<u32, u64>,
-) -> Result<u64, CliError> {
+    launchers: &[LauncherRef],
+) -> Result<HashMap<Bytes32, Bytes32>, CliError> {
     let launcher_hash: Bytes32 = SINGLETON_LAUNCHER_HASH.into();
     let rows = sqlx::query(
         r#"
-        SELECT created_height, spent_height, puzzle_hash, coin_id, parent_coin_id
+        SELECT launcher_id, parent_coin_id, puzzle_hash, coin_id, created_height
         FROM coins
         WHERE type = 'NFT'
-          AND launcher_id = ?1
+          AND launcher_id IS NOT NULL
+        ORDER BY created_height, coin_id
         "#,
     )
-    .bind(launcher_id.to_vec())
     .fetch_all(pool)
     .await?;
 
-    let mut spend_height = None;
-    let mut mint_from_parent = None;
+    let wanted: HashSet<Bytes32> = launchers.iter().map(|l| l.launcher_id).collect();
+    let mut eve_by_launcher: HashMap<Bytes32, (u32, Bytes32)> = HashMap::new();
+
     for row in rows {
         use sqlx::Row;
+        let launcher_id =
+            crate::utils::bytes32_from_db("launcher_id", row.get::<&[u8], _>("launcher_id"))?;
+        if !wanted.contains(&launcher_id) {
+            continue;
+        }
         let puzzle_hash =
             crate::utils::bytes32_from_db("puzzle_hash", row.get::<&[u8], _>("puzzle_hash"))?;
         let coin_id = crate::utils::bytes32_from_db("coin_id", row.get::<&[u8], _>("coin_id"))?;
         let parent_coin_id =
             crate::utils::bytes32_from_db("parent_coin_id", row.get::<&[u8], _>("parent_coin_id"))?;
-        if puzzle_hash == launcher_hash || coin_id == *launcher_id {
-            if let Some(spent) = row.get::<Option<i64>, _>("spent_height") {
-                spend_height = u32::try_from(spent).ok();
-            }
-            break;
+        if puzzle_hash == launcher_hash || coin_id == launcher_id {
+            continue;
         }
-        if parent_coin_id == *launcher_id {
-            let created = row.get::<i64, _>("created_height");
-            if let Ok(h) = u32::try_from(created) {
-                mint_from_parent = Some(match mint_from_parent {
-                    Some(prev) if prev < h => prev,
-                    _ => h,
-                });
+        if parent_coin_id != launcher_id {
+            continue;
+        }
+        let created = u32::try_from(row.get::<i64, _>("created_height")).map_err(|_| {
+            CliError::Message(format!(
+                "invalid created_height for coin 0x{}",
+                hex::encode(coin_id)
+            ))
+        })?;
+
+        match eve_by_launcher.get(&launcher_id) {
+            Some((prev_h, _)) if *prev_h <= created => {}
+            _ => {
+                eve_by_launcher.insert(launcher_id, (created, coin_id));
             }
         }
     }
 
-    // CNS address sync stores the launcher coin; NamesDAO DID sync often only stores
-    // NFT children. The first child whose parent is the launcher was created in the
-    // same block the launcher was spent.
-    let height = spend_height.or(mint_from_parent).ok_or_else(|| {
-        CliError::Message(format!(
-            "missing launcher spend height for 0x{}",
-            hex::encode(launcher_id)
-        ))
-    })?;
-
-    if let Some(ts) = cache.get(&height) {
-        return Ok(*ts);
+    let mut out = HashMap::new();
+    let mut missing = Vec::new();
+    for launcher in launchers {
+        match eve_by_launcher.get(&launcher.launcher_id) {
+            Some((_, coin_id)) => {
+                out.insert(launcher.launcher_id, *coin_id);
+            }
+            None => missing.push(launcher.nft_id.clone()),
+        }
     }
-    let ts = block_timestamp(client, height).await?;
-    cache.insert(height, ts);
-    Ok(ts)
+    if !missing.is_empty() {
+        let sample: Vec<_> = missing.iter().take(5).cloned().collect();
+        return Err(CliError::Message(format!(
+            "missing eve NFT coin for {} launcher(s); sample: {}",
+            missing.len(),
+            sample.join(", ")
+        )));
+    }
+    Ok(out)
+}
+
+async fn fetch_coin_timestamps_batched(
+    client: &CoinsetClient,
+    coin_ids: &[Bytes32],
+) -> Result<HashMap<Bytes32, u64>, CliError> {
+    let batches: Vec<Vec<Bytes32>> = coin_ids.chunks(100).map(|c| c.to_vec()).collect();
+    let mut out: HashMap<Bytes32, u64> = HashMap::with_capacity(coin_ids.len());
+
+    for (chunk_idx, chunk) in batches.chunks(8).enumerate() {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for batch in chunk {
+            let client = client.clone();
+            let batch = batch.clone();
+            handles.push(tokio::spawn(async move {
+                let mut last_err = None;
+                for attempt in 0..3 {
+                    match client
+                        .get_coin_records_by_names(batch.clone(), None, None, Some(true))
+                        .await
+                    {
+                        Ok(resp) => {
+                            let Some(records) = resp.coin_records else {
+                                last_err = Some(CliError::Message(
+                                    "get_coin_records_by_names returned no coin_records".into(),
+                                ));
+                                continue;
+                            };
+                            let mut map = HashMap::with_capacity(records.len());
+                            for rec in records {
+                                map.insert(rec.coin.coin_id(), rec.timestamp);
+                            }
+                            return Ok::<_, CliError>(map);
+                        }
+                        Err(err) => {
+                            last_err = Some(err.into());
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                200 * (attempt + 1) as u64,
+                            ))
+                            .await;
+                        }
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| {
+                    CliError::Message("get_coin_records_by_names failed".into())
+                }))
+            }));
+        }
+
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(map)) => out.extend(map),
+                Ok(Err(err)) => return Err(err),
+                Err(err) => {
+                    return Err(CliError::Message(format!(
+                        "coin-record batch join failed: {err}"
+                    )));
+                }
+            }
+        }
+
+        let done = ((chunk_idx + 1) * 8 * 100).min(coin_ids.len());
+        if (chunk_idx + 1) % 5 == 0 || done == coin_ids.len() {
+            println!(
+                "  coin-record progress: {done}/{} ids, {} timestamps...",
+                coin_ids.len(),
+                out.len()
+            );
+        }
+    }
+
+    Ok(out)
 }
 
 async fn repair_missing_nft_fields(
