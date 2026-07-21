@@ -88,9 +88,47 @@ awk -F',' -v OFS=',' -v floor="$EXTENSION_FLOOR" '
     }
     if (missing) exit 1
   }
-' contributor-extensions.csv premine.csv.hoisted > premine.csv
+' contributor-extensions.csv premine.csv.hoisted > premine.csv.extended
 
-rm -f premine.csv.tmp premine.csv.hoisted
+# Apply yoinks: override recipient, set allocation_type=contributor, set explanation.
+# Logs: YOINKED [handle] from [details] to [details]
+awk -F',' -v OFS=',' '
+  NR == FNR {
+    if (FNR == 1 || NF == 0) next
+    gsub(/\r/, "", $1)
+    gsub(/\r/, "", $2)
+    gsub(/\r/, "", $3)
+    if ($1 == "") next
+    yoink_recip[$1] = $2
+    yoink_expl[$1] = $3
+    next
+  }
+  NF == 0 { next }
+  FNR == 1 { print; next }
+  {
+    gsub(/\r/, "", $1)
+    if ($1 in yoink_recip) {
+      from = $2 "," $4 "," $5
+      $2 = yoink_recip[$1]
+      $4 = "contributor"
+      $5 = yoink_expl[$1]
+      to = $2 "," $4 "," $5
+      printf "YOINKED %s from %s to %s\n", $1, from, to > "/dev/stderr"
+      delete yoink_recip[$1]
+      delete yoink_expl[$1]
+    }
+    print
+  }
+  END {
+    for (h in yoink_recip) {
+      printf "error: yoink handle not found in premine: %s\n", h > "/dev/stderr"
+      missing = 1
+    }
+    if (missing) exit 1
+  }
+' yoinks.csv premine.csv.extended > premine.csv
+
+rm -f premine.csv.tmp premine.csv.hoisted premine.csv.extended
 
 if [[ -s /tmp/a ]]; then
   sort -k2,2nr -k1,1 /tmp/a -o /tmp/a
@@ -100,3 +138,22 @@ else
 fi
 
 echo "Wrote $(wc -l < premine.csv) lines to premine.csv"
+
+# Verify published CSV: header + every data row must have exactly 5 comma-separated fields
+# (i.e. exactly 4 commas per line).
+awk -F',' '
+  NF == 0 { next }
+  {
+    gsub(/\r/, "", $0)
+    # Count commas directly so empty trailing fields still fail clearly via NF.
+    n = gsub(/,/, ",", $0)
+    if (n != 4) {
+      printf "error: premine.csv line %d has %d comma(s), expected 4: %s\n", NR, n, $0 > "/dev/stderr"
+      bad = 1
+    }
+  }
+  END {
+    if (bad) exit 1
+    print "Verified premine.csv: every line has exactly 4 commas"
+  }
+' premine.csv
