@@ -82,9 +82,11 @@ cargo run -- --db nfts.db premine mintgarden-cns-hydrate --nfts-file missing-nft
 cargo run -- premine confirm base-premine.csv
 ```
 
-Confirmation reconstructs the expected Base Premine from MintGarden collection + event APIs and exhaustively compares it to the CSV. It never modifies the input file. Exit nonzero on any mismatch.
+Confirmation reconstructs the expected Base Premine from MintGarden (`/collections/{id}/nfts/ids` plus per-NFT detail/`metadata_json`) and exhaustively compares it to the CSV. It never modifies the input file. Exit nonzero on any mismatch.
 
-Pre-cutoff confirmation against MintGarden’s latest available state is rehearsal evidence only, not final cutoff confirmation.
+Rows whose recipient is the burn/null address (`xch1qqqq…m6ks6e8mvy`) are ignored on both sides — they are dropped from the published premine by `build-premine.sh`.
+
+Pre-cutoff confirmation against MintGarden’s latest available state is rehearsal evidence only, not final cutoff confirmation. Recipients use MintGarden’s current NFT owners; a transfer after the Migration Cutoff can therefore surface as a mismatch.
 
 ## Final cutoff run (at or after 2026-07-20 09:00:00 UTC)
 
@@ -115,6 +117,6 @@ cargo run -- --db nfts.db query <nft1...>
 cargo run -- --db nfts.db premine mintgarden-cns-hydrate
 ```
 
-## Note on MintGarden collection counts
+## Note on MintGarden collection indexes
 
-The MintGarden collection pages / `GET /collections/{id}/nfts/ids` lists can under-count relative to a full local sync of the CNS creator address and NamesDAO DID. Individual MintGarden NFT pages may still show the correct collection for NFTs missing from those list endpoints. Local sync follows on-chain mint lineage and is the generate source of truth; confirm’s MintGarden reconstruction can therefore see a subset until MintGarden’s collection index is complete.
+`GET /collections/{id}/nfts/ids` can under-count relative to a full local sync. Confirm backfills any NFT ids referenced by the CSV that are missing from those indexes (then loads each NFT’s detail page, which carries the authoritative `metadata_json`). NamesDAO collection-list `metadata` blobs often use the ineligible `___…` alias form — confirm does not trust those; it uses detail `metadata_json` instead.

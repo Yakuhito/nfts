@@ -57,6 +57,9 @@ pub struct PremineGenerateArgs {
 pub struct PremineConfirmArgs {
     /// Base Premine CSV to validate (never modified)
     pub input: PathBuf,
+    /// Max concurrent MintGarden NFT detail fetches
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
 }
 
 #[derive(Args, Debug)]

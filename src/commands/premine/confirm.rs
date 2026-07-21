@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -9,12 +9,10 @@ use crate::error::CliError;
 use crate::premine::csv::parse_premine_csv;
 use crate::premine::handle::is_valid_handle;
 use crate::premine::{
-    LegacyCandidate, MIGRATION_CUTOFF_UNIX, MINTGARDEN_CNS_COLLECTION,
+    DEAD_ADDRESS, LegacyCandidate, MIGRATION_CUTOFF_UNIX, MINTGARDEN_CNS_COLLECTION,
     MINTGARDEN_NAMESDAO_COLLECTION, PremineRow, Source, assert_unique_handles, build_base_premine,
     classify_legacy_name, parse_cns_expiration, parse_namesdao_expiry_height, strip_xch_suffix,
 };
-use crate::utils::encode_puzzle_hash_address;
-use chia_wallet_sdk::prelude::Bytes32;
 use chia_wallet_sdk::utils::Address;
 
 const MINTGARDEN_API: &str = "https://api.mintgarden.io";
@@ -22,65 +20,117 @@ const MINTGARDEN_API: &str = "https://api.mintgarden.io";
 pub async fn run(args: PremineConfirmArgs) -> Result<(), CliError> {
     let contents = tokio::fs::read_to_string(&args.input).await?;
     let input_mtime = std::fs::metadata(&args.input)?.modified().ok();
-    let actual = parse_premine_csv(&contents)?;
+    let actual_all = parse_premine_csv(&contents)?;
+
+    let ignored_handles: HashSet<String> = actual_all
+        .iter()
+        .filter(|row| row.recipient == DEAD_ADDRESS)
+        .map(|row| row.handle.clone())
+        .collect();
+    if !ignored_handles.is_empty() {
+        println!(
+            "Ignoring {} burn-recipient handle(s) (DEAD_ADDRESS; dropped from published premine).",
+            ignored_handles.len()
+        );
+    }
+    let actual: Vec<PremineRow> = actual_all
+        .into_iter()
+        .filter(|row| !ignored_handles.contains(&row.handle))
+        .collect();
 
     let http = reqwest::Client::builder()
         .user_agent("nfts-premine-confirm/0.1")
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
 
-    // Probe latest event timestamp to decide pre-cutoff rehearsal mode.
+    // Prefer wall-clock for cutoff mode: collection event feeds can lag or be inactive.
+    let now_unix = Utc::now().timestamp().max(0) as u64;
     let tip_unix = latest_known_event_unix(&http).await.unwrap_or(0);
-    let (effective_cutoff_unix, pre_cutoff) = if tip_unix > 0 && tip_unix < MIGRATION_CUTOFF_UNIX {
+    let (effective_cutoff_unix, pre_cutoff) = if now_unix < MIGRATION_CUTOFF_UNIX {
+        let tip = tip_unix.max(now_unix);
         eprintln!(
-            "WARNING: latest MintGarden ownership event ({tip_unix}) precedes Migration Cutoff ({MIGRATION_CUTOFF_UNIX})."
+            "WARNING: wall clock ({now_unix}) precedes Migration Cutoff ({MIGRATION_CUTOFF_UNIX})."
         );
         eprintln!(
-            "WARNING: confirming against the latest externally available state (rehearsal). This is NOT final Migration Cutoff confirmation."
+            "WARNING: confirming against the latest externally available state (rehearsal tip≈{tip}). This is NOT final Migration Cutoff confirmation."
         );
-        (tip_unix, true)
-    } else if tip_unix == 0 {
-        eprintln!(
-            "WARNING: could not determine MintGarden tip time; using Migration Cutoff {MIGRATION_CUTOFF_UNIX}."
-        );
-        (MIGRATION_CUTOFF_UNIX, false)
+        (tip, true)
     } else {
+        if tip_unix > 0 && tip_unix < MIGRATION_CUTOFF_UNIX {
+            eprintln!(
+                "NOTE: MintGarden latest collection event ({tip_unix}) lags Migration Cutoff; using cutoff {MIGRATION_CUTOFF_UNIX} because wall clock is past it."
+            );
+        }
+        if tip_unix > MIGRATION_CUTOFF_UNIX {
+            eprintln!(
+                "NOTE: MintGarden tip ({tip_unix}) is after Migration Cutoff ({MIGRATION_CUTOFF_UNIX}); recipients use MintGarden current owners (post-cutoff transfers would mismatch)."
+            );
+        }
         (MIGRATION_CUTOFF_UNIX, false)
     };
 
-    println!("Fetching CNS collection from MintGarden...");
-    let cns_nfts = fetch_all_collection_nfts(&http, MINTGARDEN_CNS_COLLECTION).await?;
-    println!("  {} CNS NFTs", cns_nfts.len());
+    println!("Fetching CNS collection ids from MintGarden...");
+    let mut cns_ids = fetch_collection_nft_ids(&http, MINTGARDEN_CNS_COLLECTION).await?;
+    println!("  {} CNS NFT ids", cns_ids.len());
 
-    println!("Fetching NamesDAO collection from MintGarden...");
-    let namesdao_nfts = fetch_all_collection_nfts(&http, MINTGARDEN_NAMESDAO_COLLECTION).await?;
-    println!("  {} NamesDAO NFTs", namesdao_nfts.len());
+    println!("Fetching NamesDAO collection ids from MintGarden...");
+    let mut namesdao_ids = fetch_collection_nft_ids(&http, MINTGARDEN_NAMESDAO_COLLECTION).await?;
+    println!("  {} NamesDAO NFT ids", namesdao_ids.len());
 
-    println!("Fetching CNS events...");
-    let cns_events = fetch_all_events(&http, MINTGARDEN_CNS_COLLECTION).await?;
-    println!("  {} CNS events", cns_events.len());
+    // Backfill any non-burn CSV NFT ids missing from collection indexes.
+    let mut backfilled = 0usize;
+    for row in &actual {
+        let Some(nft_id) = nft_id_from_mintgarden_url(&row.allocation_explanation) else {
+            continue;
+        };
+        let bucket = match row.allocation_type.as_str() {
+            "cns" => &mut cns_ids,
+            "namesdao" => &mut namesdao_ids,
+            _ => continue,
+        };
+        if bucket.insert(nft_id) {
+            backfilled += 1;
+        }
+    }
+    if backfilled > 0 {
+        println!("  Backfilled {backfilled} CSV NFT id(s) missing from collection indexes.");
+    }
 
-    println!("Fetching NamesDAO events...");
-    let namesdao_events = fetch_all_events(&http, MINTGARDEN_NAMESDAO_COLLECTION).await?;
-    println!("  {} NamesDAO events", namesdao_events.len());
-
-    let mut recipients = HashMap::new();
-    collect_recipients_at_cutoff(&cns_events, effective_cutoff_unix, &mut recipients);
-    collect_recipients_at_cutoff(&namesdao_events, effective_cutoff_unix, &mut recipients);
+    let concurrency = args.concurrency.max(1);
+    println!(
+        "Fetching NFT details from MintGarden ({} CNS + {} NamesDAO, concurrency {concurrency})...",
+        cns_ids.len(),
+        namesdao_ids.len()
+    );
+    let cns_details = fetch_nft_details(&http, &cns_ids, concurrency).await?;
+    let namesdao_details = fetch_nft_details(&http, &namesdao_ids, concurrency).await?;
+    println!(
+        "  Got {} CNS + {} NamesDAO details",
+        cns_details.len(),
+        namesdao_details.len()
+    );
 
     let mut candidates = Vec::new();
-    for nft in cns_nfts {
-        if let Some(c) = mintgarden_to_candidate(Source::Cns, &nft, &recipients)? {
+    for nft in &cns_details {
+        if let Some(c) = detail_to_candidate(Source::Cns, nft)? {
             candidates.push(c);
         }
     }
-    for nft in namesdao_nfts {
-        if let Some(c) = mintgarden_to_candidate(Source::NamesDao, &nft, &recipients)? {
+    for nft in &namesdao_details {
+        if let Some(c) = detail_to_candidate(Source::NamesDao, nft)? {
             candidates.push(c);
         }
     }
+    println!("  {} viable Legacy Candidates after classification", candidates.len());
 
-    let expected = build_base_premine(&candidates, effective_cutoff_unix);
+    let expected_all = build_base_premine(&candidates, effective_cutoff_unix);
+    let expected: Vec<PremineRow> = expected_all
+        .into_iter()
+        .filter(|row| {
+            row.recipient != DEAD_ADDRESS && !ignored_handles.contains(&row.handle)
+        })
+        .collect();
+
     let mut errors = Vec::new();
 
     // Validate actual CSV independently.
@@ -144,8 +194,9 @@ pub async fn run(args: PremineConfirmArgs) -> Result<(), CliError> {
 
     if errors.is_empty() {
         println!(
-            "OK: Base Premine matches MintGarden reconstruction ({} rows). pre_cutoff_rehearsal={pre_cutoff}",
-            expected.len()
+            "OK: Base Premine matches MintGarden reconstruction ({} rows; {} burn handle(s) ignored). pre_cutoff_rehearsal={pre_cutoff}",
+            expected.len(),
+            ignored_handles.len()
         );
         Ok(())
     } else {
@@ -197,98 +248,132 @@ fn validate_actual_rows(rows: &[PremineRow], errors: &mut Vec<String>) {
 }
 
 fn is_mintgarden_nft_url(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
+    nft_id_from_mintgarden_url(value).is_some()
+}
+
+fn nft_id_from_mintgarden_url(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
     if url.scheme() != "https" {
-        return false;
+        return None;
     }
     if url.host_str() != Some("mintgarden.io") {
-        return false;
+        return None;
     }
-    let mut segments = match url.path_segments() {
-        Some(segments) => segments,
-        None => return false,
-    };
-    matches!(
-        (segments.next(), segments.next(), segments.next()),
-        (Some("nfts"), Some(nft_id), None) if nft_id.starts_with("nft1") && !nft_id.is_empty()
-    )
+    let mut segments = url.path_segments()?;
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some("nfts"), Some(nft_id), None) if nft_id.starts_with("nft1") && !nft_id.is_empty() => {
+            Some(nft_id.to_string())
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct Page<T> {
     items: Vec<T>,
+    #[allow(dead_code)]
     next: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct MgNft {
-    id: String,
+struct MgIdItem {
     encoded_id: String,
-    metadata: Option<JsonValue>,
-    minted_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct MgEvent {
-    nft_id: String,
-    event_index: i64,
     #[serde(rename = "type")]
     event_type: i32,
     timestamp: String,
-    address: MgAddress,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct MgAddress {
-    id: String,
     encoded_id: Option<String>,
 }
 
-async fn fetch_all_collection_nfts(
-    http: &reqwest::Client,
-    collection_id: &str,
-) -> Result<Vec<MgNft>, CliError> {
-    let mut out = Vec::new();
-    let mut page: Option<String> = None;
-    loop {
-        let mut url = format!(
-            "{MINTGARDEN_API}/collections/{collection_id}/nfts?include_metadata=true&size=50"
-        );
-        if let Some(p) = &page {
-            url.push_str(&format!("&page={}", urlencoding_minimal(p)));
-        }
-        let resp: Page<MgNft> = get_json_with_retries(http, &url).await?;
-        out.extend(resp.items);
-        match resp.next {
-            Some(next) if !next.is_empty() => page = Some(next),
-            _ => break,
-        }
-    }
-    Ok(out)
+#[derive(Debug, Deserialize, Clone)]
+struct MgNftDetail {
+    #[allow(dead_code)]
+    id: String,
+    encoded_id: String,
+    collection: Option<MgCollection>,
+    owner_address: Option<MgAddress>,
+    data: Option<MgNftData>,
+    events: Option<Vec<MgEvent>>,
+    minted_at: Option<String>,
 }
 
-async fn fetch_all_events(
+#[derive(Debug, Deserialize, Clone)]
+struct MgCollection {
+    id: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct MgNftData {
+    metadata_json: Option<JsonValue>,
+}
+
+async fn fetch_collection_nft_ids(
     http: &reqwest::Client,
     collection_id: &str,
-) -> Result<Vec<MgEvent>, CliError> {
-    let mut out = Vec::new();
-    let mut page: Option<String> = None;
-    loop {
-        // type 0 mint, 1 transfer, 2 trade, 3 burn
-        let mut url = format!(
-            "{MINTGARDEN_API}/events?collection={collection_id}&type=0&type=1&type=2&type=3&size=100"
-        );
-        if let Some(p) = &page {
-            url.push_str(&format!("&page={}", urlencoding_minimal(p)));
+) -> Result<HashSet<String>, CliError> {
+    let url = format!("{MINTGARDEN_API}/collections/{collection_id}/nfts/ids");
+    let items: Vec<MgIdItem> = get_json_with_retries(http, &url).await?;
+    Ok(items.into_iter().map(|item| item.encoded_id).collect())
+}
+
+async fn fetch_nft_details(
+    http: &reqwest::Client,
+    ids: &HashSet<String>,
+    concurrency: usize,
+) -> Result<Vec<MgNftDetail>, CliError> {
+    let mut ids: Vec<String> = ids.iter().cloned().collect();
+    ids.sort();
+    let http = http.clone();
+    let mut out = Vec::with_capacity(ids.len());
+    let mut failed = 0usize;
+
+    for (chunk_idx, chunk) in ids.chunks(concurrency).enumerate() {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for nft_id in chunk {
+            let http = http.clone();
+            let nft_id = nft_id.clone();
+            handles.push(tokio::spawn(async move {
+                let url = format!("{MINTGARDEN_API}/nfts/{nft_id}");
+                match get_json_with_retries(&http, &url).await {
+                    Ok(detail) => Ok(detail),
+                    Err(err) => Err((nft_id, err)),
+                }
+            }));
         }
-        let resp: Page<MgEvent> = get_json_with_retries(http, &url).await?;
-        out.extend(resp.items);
-        match resp.next {
-            Some(next) if !next.is_empty() => page = Some(next),
-            _ => break,
+
+        for handle in handles {
+            match handle
+                .await
+                .map_err(|err| CliError::Message(format!("confirm task join error: {err}")))?
+            {
+                Ok(detail) => out.push(detail),
+                Err((nft_id, err)) => {
+                    failed += 1;
+                    eprintln!("  WARN: failed to fetch {nft_id}: {err}");
+                }
+            }
         }
+
+        if (chunk_idx + 1) % 25 == 0 || chunk_idx + 1 == ids.len().div_ceil(concurrency) {
+            println!(
+                "  … details {}/{} (failed {failed})",
+                out.len() + failed,
+                ids.len()
+            );
+        }
+    }
+
+    if failed > 0 {
+        return Err(CliError::Message(format!(
+            "failed to fetch {failed} MintGarden NFT detail(s)"
+        )));
     }
     Ok(out)
 }
@@ -317,9 +402,12 @@ async fn get_json_with_retries<T: for<'de> Deserialize<'de>>(
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                     continue;
                 }
+                if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Err(CliError::Message(format!("MintGarden 404 for {url}")));
+                }
                 let resp = resp.error_for_status()?;
-                // Pace pagination so we don't trip MintGarden rate limits mid-confirm.
-                tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                // Pace successful fetches to reduce MintGarden 429s.
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 return Ok(resp.json().await?);
             }
             Err(err) if attempt <= 10 => {
@@ -336,7 +424,7 @@ async fn latest_known_event_unix(http: &reqwest::Client) -> Result<u64, CliError
     let url = format!(
         "{MINTGARDEN_API}/events?collection={MINTGARDEN_CNS_COLLECTION}&type=0&type=1&type=2&type=3&size=1"
     );
-    let resp: Page<MgEvent> = http
+    let resp: Page<MgEventProbe> = http
         .get(url)
         .send()
         .await?
@@ -349,49 +437,25 @@ async fn latest_known_event_unix(http: &reqwest::Client) -> Result<u64, CliError
     parse_rfc3339_unix(&ev.timestamp)
 }
 
-fn collect_recipients_at_cutoff(
-    events: &[MgEvent],
-    cutoff_unix: u64,
-    out: &mut HashMap<String, String>,
-) {
-    // Last ownership-changing event at or before cutoff wins.
-    let mut best: HashMap<String, (u64, i64, String)> = HashMap::new();
-    for ev in events {
-        if !(0..=3).contains(&ev.event_type) {
-            continue;
-        }
-        let Ok(ts) = parse_rfc3339_unix(&ev.timestamp) else {
-            continue;
-        };
-        if ts > cutoff_unix {
-            continue;
-        }
-        let recipient = ev
-            .address
-            .encoded_id
-            .clone()
-            .unwrap_or_else(|| puzzle_hash_hex_to_xch(&ev.address.id).unwrap_or_default());
-        if recipient.is_empty() {
-            continue;
-        }
-        let entry = best
-            .entry(ev.nft_id.clone())
-            .or_insert((0, -1, String::new()));
-        if ts > entry.0 || (ts == entry.0 && ev.event_index > entry.1) {
-            *entry = (ts, ev.event_index, recipient);
-        }
-    }
-    for (nft_id, (_, _, recipient)) in best {
-        out.insert(nft_id, recipient);
-    }
+#[derive(Debug, Deserialize)]
+struct MgEventProbe {
+    timestamp: String,
 }
 
-fn mintgarden_to_candidate(
+fn detail_to_candidate(
     source: Source,
-    nft: &MgNft,
-    recipients: &HashMap<String, String>,
+    nft: &MgNftDetail,
 ) -> Result<Option<LegacyCandidate>, CliError> {
-    let Some(meta) = nft.metadata.as_ref() else {
+    let expected_collection = match source {
+        Source::Cns => MINTGARDEN_CNS_COLLECTION,
+        Source::NamesDao => MINTGARDEN_NAMESDAO_COLLECTION,
+    };
+    if nft.collection.as_ref().map(|c| c.id.as_str()) != Some(expected_collection) {
+        // Not attributed to this collection on MintGarden detail — skip.
+        return Ok(None);
+    }
+
+    let Some(meta) = nft.data.as_ref().and_then(|d| d.metadata_json.as_ref()) else {
         return Ok(None);
     };
     let Some(raw_name) = meta
@@ -441,15 +505,32 @@ fn mintgarden_to_candidate(
         }
     };
 
-    let Some(recipient) = recipients.get(&nft.id).cloned() else {
-        // No ownership event at/before cutoff — skip (cannot assign recipient).
+    let Some(recipient) = nft
+        .owner_address
+        .as_ref()
+        .and_then(|a| a.encoded_id.clone())
+        .filter(|s| !s.is_empty())
+    else {
         return Ok(None);
     };
+    // Burn-recipient registrations are omitted from the published premine.
+    if recipient == DEAD_ADDRESS {
+        return Ok(None);
+    }
 
     let registration_time = nft
         .minted_at
         .as_deref()
         .and_then(|s| parse_rfc3339_unix(s).ok())
+        .or_else(|| {
+            nft.events.as_ref().and_then(|events| {
+                events
+                    .iter()
+                    .filter(|ev| ev.event_type == 0)
+                    .filter_map(|ev| parse_rfc3339_unix(&ev.timestamp).ok())
+                    .min()
+            })
+        })
         .unwrap_or(0);
 
     Ok(Some(LegacyCandidate {
@@ -468,30 +549,4 @@ fn parse_rfc3339_unix(s: &str) -> Result<u64, CliError> {
     let dt = DateTime::parse_from_rfc3339(s)
         .map_err(|err| CliError::Message(format!("invalid timestamp {s:?}: {err}")))?;
     Ok(dt.with_timezone(&Utc).timestamp().max(0) as u64)
-}
-
-fn puzzle_hash_hex_to_xch(hex_str: &str) -> Result<String, CliError> {
-    let normalized = hex_str.trim().trim_start_matches("0x");
-    let bytes = hex::decode(normalized)
-        .map_err(|err| CliError::Message(format!("invalid puzzle hash hex: {err}")))?;
-    if bytes.len() != 32 {
-        return Err(CliError::Message(format!(
-            "expected 32-byte puzzle hash, got {}",
-            bytes.len()
-        )));
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    encode_puzzle_hash_address(&Bytes32::new(arr))
-}
-
-fn urlencoding_minimal(value: &str) -> String {
-    // MintGarden cursors are typically URL-safe; still escape reserved chars.
-    value
-        .chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u8),
-        })
-        .collect()
 }

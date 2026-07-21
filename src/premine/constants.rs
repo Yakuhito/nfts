@@ -23,6 +23,10 @@ pub const MINTGARDEN_CNS_COLLECTION: &str =
 pub const MINTGARDEN_NAMESDAO_COLLECTION: &str =
     "col1u9pemm2avjcz8t9emhga4vys5knugsfnctpkk2jyx05jc8d6ch2swe4qvm";
 
+/// Burn / null recipient. Base Premine may still list these rows; published premine drops them.
+pub const DEAD_ADDRESS: &str =
+    "xch1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqm6ks6e8mvy";
+
 /// NamesDAO DID launcher id (hex, no 0x).
 pub const NAMESDAO_DID_LAUNCHER_HEX: &str =
     "8ec8c193d7d8753707af7fc1936056eea8a3589c91250ce03f464f8d506b6fea";

@@ -30,6 +30,7 @@ target
 *.db-journal
 # Local DB copies / rehearsal backups
 *.db.*
+*.db-*
 *.bak
 
 # Local rehearsal / process notes
